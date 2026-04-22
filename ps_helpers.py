@@ -8,12 +8,12 @@ def find_devices():
     return devices
 
 def run_measurement(dev):
-    ps.connect(dev)
+    # ps.connect(dev) Persistent connection eller endast under measurement?
     
-    method = ps.Method()
+    method = ps.MethodScript()
     res = ps.measure(method)
     
-    ps.disconnect()
+    # ps.disconnect()
     return res
 
 #def loop_methods(dev, methods, count):
@@ -21,3 +21,7 @@ def run_measurement(dev):
 #def save_method():
     
 #def load_method():
+
+#def save_session():
+
+#def load_session():
