@@ -1,11 +1,27 @@
 import pypalmsens as ps
 
+class fake_device: #TODO:kom på bättre sätt för att testa
+    def __init__(self):
+        self.baudrate = 9600
+
+    def ToString(self):
+        return "MyDeviceCH01"
+
+    def Open(self):
+        pass
+
+    async def OpenAsync(self):
+        pass
+
 def find_devices():
-    devices = ps.discover()
-    print(devices)
-    if len(devices) == 0:
-        raise RuntimeError("no devices found")
-    return devices
+    # devices = ps.discover()
+    # print(devices)
+    # if len(devices) == 0:
+    #     raise RuntimeError("no devices found")
+    # return devices
+    dev1 = ps.Instrument(id="MyDevice", interface="serial", device=fake_device())
+    dev1.name = "Hej"
+    return [dev1]
 
 def run_measurement(dev):
     # ps.connect(dev) Persistent connection eller endast under measurement?

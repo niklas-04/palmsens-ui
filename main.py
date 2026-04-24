@@ -1,5 +1,5 @@
 from PySide6.QtCore import Signal, QObject
-from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox
+from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QPushButton
 from PySide6.QtGui import QAction
 import pypalmsens as ps
 
@@ -11,25 +11,61 @@ class connection_indicator(QLabel):
         super().__init__(parent)
         self.set_status(False) # Initierar connection som false
 
-    def set_status(self, is_connected: bool, dev:ps.Instrument = None):
-        if is_connected:
+    def set_status(self, is_connected: bool, dev: ps.Instrument = None):
+        if is_connected and dev is not None:
             self.setText(f"Connected to {dev.name}")
             self.setStyleSheet("color: green;")
         else:
             self.setText("Disconnected")
             self.setStyleSheet("color: red;")
-        
 
-class list_devices(QLabel):
+
+class device_selection_dialog(QDialog):
+    def __init__(self, devices, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Select Device")
+
+        layout = QVBoxLayout(self)
+
+        self.device_list = list_devices()
+        self.device_list.set_devices(devices)
+        layout.addWidget(self.device_list)
+
+        self.connect_button = QPushButton("Connect")
+        layout.addWidget(self.connect_button)
+
+        self.selected_device = None
+
+        self.connect_button.clicked.connect(self.select_device)
+
+    def select_device(self):
+        dev = self.device_list.get_selected_device()
+        if dev is not None:
+            self.selected_device = dev
+            self.accept() 
+
+class list_devices(QWidget):
     def __init__(self):
         super().__init__()
+        
+        layout = QVBoxLayout(self)
         self.list_widget = QListWidget(self)
-        devices = pslib.find_devices()
-
-        for i in range(len(devices)):
-            dev = QListWidgetItem()
-            dev.setText(str(devices[i]))
-            self.list_widget.addItem(dev)
+        layout.addWidget(self.list_widget)
+        self.devices = []
+    
+    def set_devices(self, devices):
+        self.devices = devices
+        self.list_widget.clear() # Om det fanns enheter sedan tidigare skanningar
+        
+        for dev in devices:
+            self.list_widget.addItem(str(dev.name))
+            
+    def get_selected_device(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < len(self.devices):
+            return self.devices[row]
+        return None
                 
 
 class device_manager(QObject):
@@ -41,16 +77,19 @@ class device_manager(QObject):
         super().__init__()
         self.is_connected = False
         self.device = None
+        self.manager = None
 
-    def connect_device(self, dev = None):
+    def connect_device(self, dev: ps.Instrument):
         if not self.is_connected:
-            self.is_connected = True
+            #self.manager = ps.connect(dev)
             self.device = dev
+            self.is_connected = True
             self.connected.emit(dev)
             self.connection_changed.emit(True)
             
     def disconnect_device(self):
-        if self.is_connected:
+        if self.is_connected and self.device is not None:
+            #self.manager.disconnect()
             self.is_connected = False
             self.device = None
             self.disconnected.emit()
@@ -66,7 +105,7 @@ class main_window(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         self.addToolBar(toolbar)
 
-        scan_action = QAction("Scan devices", self)
+        scan_action = QAction("Connect", self)
         scan_action.setStatusTip("Scan for available devices")
         scan_action.triggered.connect(self.scan_devices)
         toolbar.addAction(scan_action)
@@ -77,8 +116,8 @@ class main_window(QMainWindow):
         self.disconnect_action.triggered.connect(self.device_manager.disconnect_device)
         toolbar.addAction(self.disconnect_action)
 
-        self.widget_connection_indicator = connection_indicator()
-        self.setCentralWidget(self.widget_connection_indicator)
+        self.connection_indicator = connection_indicator()
+        self.statusBar().addPermanentWidget(self.connection_indicator)
 
         self.device_manager.connected.connect(self.on_connect)
         self.device_manager.disconnected.connect(self.on_disconnect)
@@ -87,26 +126,36 @@ class main_window(QMainWindow):
     def scan_devices(self):
         try:
             devices = pslib.find_devices()
-            QMessageBox.information(
-                self,
-                "Scan complete",
-                f"Found {len(devices)} device(s)"
-            )
-        except:
+            if not devices:
+                QMessageBox.warning(
+                    self,
+                    "Scan complete",
+                    "No devices found"
+                )
+                return
+
+            dialog = device_selection_dialog(devices, self)
+            if dialog.exec():  # user pressed Connect
+                selected = dialog.selected_device
+            if selected:
+                self.device_manager.connect_device(selected)
+                
+        except Exception as e: #TODO: Logga istället för ruta
             QMessageBox.warning(
                 self,
-                "Scan complete",
-                "No devices found"
+                "Scan error",
+                str(e)
             )
+        
             
     def update_connection(self, is_connected: bool):
         self.disconnect_action.setEnabled(is_connected)
     
     def on_connect(self, dev):
-        self.widget_connection_indicator.set_status(True, dev)
+        self.connection_indicator.set_status(True, dev)
         
     def on_disconnect(self):
-        self.widget_connection_indicator.set_status(False)
+        self.connection_indicator.set_status(False)
 
         
         
