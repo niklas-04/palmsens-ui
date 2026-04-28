@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "palmsens-ui"
+version = "0.1.0"
+dependencies = [
+	"PySide6",
+	"PyPalmSens"
+]
+
+[tool.setuptools]
+py-modules = ["main", "ps_helpers"]
