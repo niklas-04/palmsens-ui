@@ -1,6 +1,7 @@
 from PySide6.QtCore import Signal, QObject
 from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QPushButton
 from PySide6.QtGui import QAction
+from graph import graph_widget
 import pypalmsens as ps
 
 import ps_helpers as pslib
@@ -28,8 +29,8 @@ class device_selection_dialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self.device_list = list_devices()
-        self.device_list.set_devices(devices)
+        self.device_list = list_choices()
+        self.device_list.set_choice(devices)
         layout.addWidget(self.device_list)
 
         self.connect_button = QPushButton("Connect")
@@ -40,31 +41,31 @@ class device_selection_dialog(QDialog):
         self.connect_button.clicked.connect(self.select_device)
 
     def select_device(self):
-        dev = self.device_list.get_selected_device()
+        dev = self.device_list.get_selected_choice()
         if dev is not None:
             self.selected_device = dev
             self.accept() 
 
-class list_devices(QWidget):
+class list_choices(QWidget):
     def __init__(self):
         super().__init__()
         
         layout = QVBoxLayout(self)
         self.list_widget = QListWidget(self)
         layout.addWidget(self.list_widget)
-        self.devices = []
+        self.choices = []
     
-    def set_devices(self, devices):
-        self.devices = devices
+    def set_choice(self, choices):
+        self.choices = choices
         self.list_widget.clear() # Om det fanns enheter sedan tidigare skanningar
         
-        for dev in devices:
+        for dev in choices:
             self.list_widget.addItem(str(dev.name))
             
-    def get_selected_device(self):
+    def get_selected_choice(self):
         row = self.list_widget.currentRow()
-        if 0 <= row < len(self.devices):
-            return self.devices[row]
+        if 0 <= row < len(self.choices):
+            return self.choices[row]
         return None
                 
 
@@ -122,6 +123,10 @@ class main_window(QMainWindow):
         self.device_manager.connected.connect(self.on_connect)
         self.device_manager.disconnected.connect(self.on_disconnect)
         self.device_manager.connection_changed.connect(self.update_connection)
+
+        self.graph = graph_widget()
+        self.setCentralWidget(self.graph)
+        # TODO: låt användaren plotta measurements, antingen från en metod som körs eller tex från tidigare session
 
     def scan_devices(self):
         try:

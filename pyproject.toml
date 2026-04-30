@@ -7,7 +7,9 @@ name = "palmsens-ui"
 version = "0.1.0"
 dependencies = [
 	"PySide6",
-	"PyPalmSens"
+	"PyPalmSens",
+	"pyqtgraph"
+
 ]
 
 [tool.setuptools]

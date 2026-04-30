@@ -1,4 +1,5 @@
 import pypalmsens as ps
+from pathlib import Path
 
 class fake_device: #TODO:kom på bättre sätt för att testa
     def __init__(self):
@@ -33,6 +34,12 @@ def run_measurement(dev):
     return res
 
 #def loop_methods(dev, methods, count):
+
+#def save_session():
+
+def load_session(path: str | Path):
+    return ps.load_session_file(path)
+    
 
 #def save_method():
     
