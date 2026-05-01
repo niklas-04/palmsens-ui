@@ -1,7 +1,7 @@
 from PySide6.QtCore import Signal, QObject
 from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QPushButton
 from PySide6.QtGui import QAction
-from graph import graph_widget
+from graph import graph_panel
 import pypalmsens as ps
 
 import ps_helpers as pslib
@@ -124,8 +124,9 @@ class main_window(QMainWindow):
         self.device_manager.disconnected.connect(self.on_disconnect)
         self.device_manager.connection_changed.connect(self.update_connection)
 
-        self.graph = graph_widget()
-        self.setCentralWidget(self.graph)
+        self.graph_panel = graph_panel()
+        self.setCentralWidget(self.graph_panel)
+        self.graph_panel.graph.plot_measurement_from_session("/home/niklas/Downloads/A.pssession", 0)
         # TODO: låt användaren plotta measurements, antingen från en metod som körs eller tex från tidigare session
 
     def scan_devices(self):
