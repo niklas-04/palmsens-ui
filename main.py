@@ -100,7 +100,7 @@ class main_window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.measurements = list()
-        self.panels = list()
+        self.panels: list[graph_panel] = list()
         self.setWindowTitle("Palmsens demo")
 
         self.device_manager = device_manager()
@@ -189,7 +189,16 @@ class main_window(QMainWindow):
             return
         
         self.measurements = pslib.load_session(file_path)
-        self.graph_panel.graph.plot_measurement(self.measurements[0])
+
+        nr_panels = len(self.panels) # TODO: ta antal tomma paneler istället för att inte överskrida de med fyllda mätningar
+        nr_measurements = len(self.measurements)
+        if nr_measurements > nr_panels:
+            for _ in range(nr_measurements - nr_panels):
+                self.add_panel()
+        for i in range(nr_measurements):
+            self.panels[i].graph.plot_measurement(self.measurements[i])
+            
+            
 
     def save_session(self):
         if len(self.measurements) == 0:
