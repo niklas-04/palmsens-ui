@@ -25,11 +25,6 @@ class graph_widget(QWidget):
         self.plot_widget = pg.PlotWidget()
         layout.addWidget(self.plot_widget)
 
-    def plot_measurement_from_session(self, session_path, measurement_index):
-      measurements = pslib.load_session(session_path)
-      if measurement_index < len(measurements):
-        self.plot_measurement(measurement=measurements[measurement_index])
-    
     def plot_measurement(self, measurement, x_index=0, y_index=1):
         self.measurement = measurement
         self.x_index = x_index
@@ -91,6 +86,7 @@ class axis_selection_dialog(QDialog):
 class graph_panel(QWidget):
     run_requested = Signal() # Dessa två signaler kan användas senare i main fönstret för att intiera/stoppa measurement
     stop_requested = Signal()
+    kill_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -106,14 +102,19 @@ class graph_panel(QWidget):
         self.run_action = QAction("Run", self)
         self.stop_action = QAction("Stop", self)
         self.axes_action = QAction("Edit Axes", self)
+        self.kill_action = QAction("Kill panel", self)
 
         self.toolbar.addAction(self.run_action)
         self.toolbar.addAction(self.stop_action)
         self.toolbar.addAction(self.axes_action)
+        self.toolbar.addAction(self.kill_action)
 
         self.run_action.triggered.connect(self.run_requested.emit)
         self.stop_action.triggered.connect(self.stop_requested.emit)
         self.axes_action.triggered.connect(self.edit_axes)
+        self.stop_action.triggered.connect(self.kill_requested.emit)
+        
+
 
     def edit_axes(self):
         measurement = self.graph.measurement

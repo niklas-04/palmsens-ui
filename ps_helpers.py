@@ -35,7 +35,8 @@ def run_measurement(dev):
 
 #def loop_methods(dev, methods, count):
 
-#def save_session():
+def save_session(path: str | Path, session):
+    ps.save_session_file(path, session)
 
 def load_session(path: str | Path):
     return ps.load_session_file(path)
@@ -45,6 +46,3 @@ def load_session(path: str | Path):
     
 #def load_method():
 
-#def save_session():
-
-#def load_session():

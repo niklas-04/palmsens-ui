@@ -1,5 +1,5 @@
 from PySide6.QtCore import Signal, QObject
-from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QPushButton, QFileDialog
 from PySide6.QtGui import QAction
 from graph import graph_panel
 import pypalmsens as ps
@@ -99,6 +99,8 @@ class device_manager(QObject):
 class main_window(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.measurements = list()
+        self.panels = list()
         self.setWindowTitle("Palmsens demo")
 
         self.device_manager = device_manager()
@@ -117,16 +119,28 @@ class main_window(QMainWindow):
         self.disconnect_action.triggered.connect(self.device_manager.disconnect_device)
         toolbar.addAction(self.disconnect_action)
 
+        self.open_action = QAction("Open session", self)
+        self.open_action.triggered.connect(self.open_session)
+        toolbar.addAction(self.open_action)
+
+        self.save_action = QAction("Save session", self)
+        self.save_action.triggered.connect(self.save_session)
+        toolbar.addAction(self.save_action)
+        
+        self.add_panel_action = QAction("Add panel", self)
+        self.add_panel_action.triggered.connect(self.add_panel)
+        toolbar.addAction(self.add_panel_action)
+
         self.connection_indicator = connection_indicator()
         self.statusBar().addPermanentWidget(self.connection_indicator)
 
         self.device_manager.connected.connect(self.on_connect)
         self.device_manager.disconnected.connect(self.on_disconnect)
         self.device_manager.connection_changed.connect(self.update_connection)
-
-        self.graph_panel = graph_panel()
-        self.setCentralWidget(self.graph_panel)
-        self.graph_panel.graph.plot_measurement_from_session("/home/niklas/Downloads/A.pssession", 0)
+    
+        self.panel_conainer = QWidget()
+        self.panel_layout = QVBoxLayout(self.panel_conainer)
+        self.setCentralWidget(self.panel_conainer)
         # TODO: låt användaren plotta measurements, antingen från en metod som körs eller tex från tidigare session
 
     def scan_devices(self):
@@ -162,6 +176,48 @@ class main_window(QMainWindow):
         
     def on_disconnect(self):
         self.connection_indicator.set_status(False)
+        
+    def open_session(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select a file",
+            "",
+            "Session Files (*.pssession)"
+        )
+
+        if file_path == "":
+            return
+        
+        self.measurements = pslib.load_session(file_path)
+        self.graph_panel.graph.plot_measurement(self.measurements[0])
+
+    def save_session(self):
+        if len(self.measurements) == 0:
+            QMessageBox.warning(
+                self,
+                "Save error",
+                "No measurements to save"
+            )
+            return
+         
+        file_path, _ = QFileDialog.getSaveFileName(
+        self,
+        "Save session",
+        "",
+        "Session Files (*.pssession)"
+        )
+
+        if file_path == "":
+            return
+
+        pslib.save_session(file_path, self.measurements)
+
+    def add_panel(self):
+       panel = graph_panel()
+       self.panels.append(panel)
+       print(self.panels)
+       self.panel_layout.addWidget(panel)
+
 
         
         
