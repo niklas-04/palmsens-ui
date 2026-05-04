@@ -86,7 +86,7 @@ class axis_selection_dialog(QDialog):
 class graph_panel(QWidget):
     run_requested = Signal() # Dessa två signaler kan användas senare i main fönstret för att intiera/stoppa measurement
     stop_requested = Signal()
-    kill_requested = Signal()
+    remove_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -102,17 +102,17 @@ class graph_panel(QWidget):
         self.run_action = QAction("Run", self)
         self.stop_action = QAction("Stop", self)
         self.axes_action = QAction("Edit Axes", self)
-        self.kill_action = QAction("Kill panel", self)
+        self.remove_action = QAction("Remove", self)
 
         self.toolbar.addAction(self.run_action)
         self.toolbar.addAction(self.stop_action)
         self.toolbar.addAction(self.axes_action)
-        self.toolbar.addAction(self.kill_action)
+        self.toolbar.addAction(self.remove_action)
 
         self.run_action.triggered.connect(self.run_requested.emit)
         self.stop_action.triggered.connect(self.stop_requested.emit)
         self.axes_action.triggered.connect(self.edit_axes)
-        self.stop_action.triggered.connect(self.kill_requested.emit)
+        self.remove_action.triggered.connect(self.remove_requested.emit)
         
 
 

@@ -224,8 +224,16 @@ class main_window(QMainWindow):
     def add_panel(self):
        panel = graph_panel()
        self.panels.append(panel)
-       print(self.panels)
+       panel.remove_requested.connect(lambda: self.remove_panel(panel))
        self.panel_layout.addWidget(panel)
+
+    def remove_panel(self, panel):
+        if panel not in self.panels:
+            return
+        
+        self.panel_layout.removeWidget(panel)
+        self.panels.remove(panel)
+        panel.deleteLater()
 
 
         
