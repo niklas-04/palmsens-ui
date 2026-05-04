@@ -146,6 +146,7 @@ class main_window(QMainWindow):
     def scan_devices(self):
         try:
             devices = pslib.find_devices()
+            print(devices)
             if not devices:
                 QMessageBox.warning(
                     self,

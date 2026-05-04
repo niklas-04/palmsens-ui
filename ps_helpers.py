@@ -1,48 +1,57 @@
-import pypalmsens as ps
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
 
-class fake_device: #TODO:kom på bättre sätt för att testa
-    def __init__(self):
-        self.baudrate = 9600
+import pypalmsens as ps
 
-    def ToString(self):
-        return "MyDeviceCH01"
 
-    def Open(self):
-        pass
+class discovered_device:
+    name: str
+    channels: list[ps.Instrument]
 
-    async def OpenAsync(self):
-        pass
+    def channel_count(self):
+        return len(self.channels)
+
+
+def _device_group_key(instrument: ps.Instrument):
+    if instrument.channel > 0: # Om det enheten har flera kanaler
+        return (instrument.interface, instrument.name)
+
+    return (instrument.interface, instrument.id)
+
+def _channel_sort_key(instrument: ps.Instrument):
+    if instrument.channel > 0:
+        return instrument.channel
+    return 10**9 # stort tal bara för att sortera sist
+
 
 def find_devices():
-    # devices = ps.discover()
-    # print(devices)
-    # if len(devices) == 0:
-    #     raise RuntimeError("no devices found")
-    # return devices
-    dev1 = ps.Instrument(id="MyDevice", interface="serial", device=fake_device())
-    dev1.name = "Hej"
-    return [dev1]
-
-def run_measurement(dev):
-    # ps.connect(dev) Persistent connection eller endast under measurement?
+    instruments = ps.discover()
+    if not instruments:
+        return instruments
     
-    method = ps.MethodScript()
-    res = ps.measure(method)
-    
-    # ps.disconnect()
-    return res
+    grouped_channels: dict[tuple[str, str], list[ps.Instrument]] = {}
 
-#def loop_methods(dev, methods, count):
+    for instrument in instruments:
+        key = _device_group_key(instrument)
+        if key not in grouped_channels:
+            grouped_channels[key] = []
+        grouped_channels[key].append(instrument)
+
+    devices: list[discovered_device] = []
+
+    for channels in grouped_channels.values():
+        channels.sort(key=_channel_sort_key)
+        devices.append(discovered_device(channels[0].name, channels))
+
+    devices.sort(key=lambda device: device.name.casefold()) # sortera efter namn
+    return devices
+
 
 def save_session(path: str | Path, session):
     ps.save_session_file(path, session)
 
+
 def load_session(path: str | Path):
     return ps.load_session_file(path)
-    
-
-#def save_method():
-    
-#def load_method():
-
