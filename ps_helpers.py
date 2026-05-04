@@ -1,11 +1,40 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 
 import pypalmsens as ps
 
 
+@dataclass(slots=True)
+class mock_instrument:
+    id: str
+    interface: str
+    name: str
+    channel: int = -1
+
+def create_mock_device(name: str, channel_count: int):
+    channels = []
+
+    for channel in range(1, channel_count + 1):
+        if channel_count == 1:
+            instrument = mock_instrument(
+                id=name,
+                interface="mock",
+                name=name,
+            )
+        else:
+            instrument = mock_instrument(
+                id=f"{name}CH{channel:02d}", # formaterar kanalnamn på samma sätt som riktiga enheter
+                interface="mock",
+                name=name,
+                channel=channel,
+            )
+        channels.append(instrument)
+
+    return discovered_device(name, channels)
+
+
+
+@dataclass(slots=True)
 class discovered_device:
     name: str
     channels: list[ps.Instrument]
@@ -27,6 +56,8 @@ def _channel_sort_key(instrument: ps.Instrument):
 
 
 def find_devices():
+    return [create_mock_device("test device", 5)]
+
     instruments = ps.discover()
     if not instruments:
         return instruments

@@ -12,7 +12,7 @@ class connection_indicator(QLabel):
         super().__init__(parent)
         self.set_status(False) # Initierar connection som false
 
-    def set_status(self, is_connected: bool, dev: ps.Instrument = None):
+    def set_status(self, is_connected: bool, dev: pslib.discovered_device = None):
         if is_connected and dev is not None:
             self.setText(f"Connected to {dev.name}")
             self.setStyleSheet("color: green;")
@@ -80,7 +80,7 @@ class device_manager(QObject):
         self.device = None
         self.manager = None
 
-    def connect_device(self, dev: ps.Instrument):
+    def connect_device(self, dev: pslib.discovered_device):
         if not self.is_connected:
             #self.manager = ps.connect(dev)
             self.device = dev
@@ -144,36 +144,30 @@ class main_window(QMainWindow):
         # TODO: låt användaren plotta measurements, antingen från en metod som körs eller tex från tidigare session
 
     def scan_devices(self):
-        try:
-            devices = pslib.find_devices()
-            print(devices)
-            if not devices:
-                QMessageBox.warning(
-                    self,
-                    "Scan complete",
-                    "No devices found"
-                )
-                return
-
-            dialog = device_selection_dialog(devices, self)
-            if dialog.exec():  # user pressed Connect
-                selected = dialog.selected_device
-            if selected:
-                self.device_manager.connect_device(selected)
-                
-        except Exception as e: #TODO: Logga istället för ruta
+        devices = pslib.find_devices()
+        print(devices)
+        if not devices:
             QMessageBox.warning(
                 self,
-                "Scan error",
-                str(e)
+                "Scan complete",
+                "No devices found"
             )
-        
+            return
+
+        dialog = device_selection_dialog(devices, self)
+        if dialog.exec():
+            selected = dialog.selected_device
+        if selected:
+            self.device_manager.connect_device(selected)
+    
             
     def update_connection(self, is_connected: bool):
         self.disconnect_action.setEnabled(is_connected)
     
     def on_connect(self, dev):
         self.connection_indicator.set_status(True, dev)
+        for _ in range(dev.channel_count()):
+            self.add_panel()
         
     def on_disconnect(self):
         self.connection_indicator.set_status(False)
