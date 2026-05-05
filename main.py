@@ -168,8 +168,8 @@ class main_window(QMainWindow):
     
     def on_connect(self, dev):
         self.connection_indicator.set_status(True, dev)
-        for _ in range(dev.channel_count()):
-            self.add_panel()
+        for instrument in dev.channels:
+            self.add_panel(f"CH {str(instrument.channel)}")
         
     def on_disconnect(self):
         self.connection_indicator.set_status(False)
@@ -218,8 +218,8 @@ class main_window(QMainWindow):
 
         pslib.save_session(file_path, self.measurements)
 
-    def add_panel(self):
-        panel = graph_panel()
+    def add_panel(self, title="panel"):
+        panel = graph_panel(title)
         self.panels.append(panel)
         panel.remove_requested.connect(lambda: self.remove_panel(panel))
         self.refresh_panel_grid()

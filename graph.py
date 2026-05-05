@@ -1,5 +1,6 @@
 from PySide6.QtWidgets import (
     QWidget,
+    QLabel,
     QVBoxLayout,
     QToolBar,
     QDialog,
@@ -88,12 +89,16 @@ class graph_panel(QWidget):
     stop_requested = Signal()
     remove_requested = Signal()
 
-    def __init__(self):
+    def __init__(self, title):
         super().__init__()
 
         self.graph = graph_widget()
 
         layout = QVBoxLayout(self)
+        
+        self.title = title
+        title_label = QLabel(self.title)
+        layout.addWidget(title_label)
 
         self.toolbar = QToolBar("Graph Utilities", self)
         layout.addWidget(self.toolbar)
