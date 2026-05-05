@@ -1,11 +1,13 @@
 from PySide6.QtCore import Signal, QObject
-from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QPushButton, QFileDialog
+from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QGridLayout, QPushButton, QFileDialog
 from PySide6.QtGui import QAction
 from graph import graph_panel
 import pypalmsens as ps
 
 import ps_helpers as pslib
 import sys
+
+PANEL_COLUMNS= 3
 
 class connection_indicator(QLabel):
     def __init__(self, parent=None):
@@ -139,7 +141,7 @@ class main_window(QMainWindow):
         self.device_manager.connection_changed.connect(self.update_connection)
     
         self.panel_conainer = QWidget()
-        self.panel_layout = QVBoxLayout(self.panel_conainer)
+        self.panel_layout = QGridLayout(self.panel_conainer)
         self.setCentralWidget(self.panel_conainer)
         # TODO: låt användaren plotta measurements, antingen från en metod som körs eller tex från tidigare session
 
@@ -217,10 +219,10 @@ class main_window(QMainWindow):
         pslib.save_session(file_path, self.measurements)
 
     def add_panel(self):
-       panel = graph_panel()
-       self.panels.append(panel)
-       panel.remove_requested.connect(lambda: self.remove_panel(panel))
-       self.panel_layout.addWidget(panel)
+        panel = graph_panel()
+        self.panels.append(panel)
+        panel.remove_requested.connect(lambda: self.remove_panel(panel))
+        self.refresh_panel_grid()
 
     def remove_panel(self, panel):
         if panel not in self.panels:
@@ -229,6 +231,13 @@ class main_window(QMainWindow):
         self.panel_layout.removeWidget(panel)
         self.panels.remove(panel)
         panel.deleteLater()
+        self.refresh_panel_grid()
+
+    def refresh_panel_grid(self):
+        for index, panel in enumerate(self.panels):
+            row = index // PANEL_COLUMNS
+            column = index % PANEL_COLUMNS
+            self.panel_layout.addWidget(panel, row, column)
 
 
         
