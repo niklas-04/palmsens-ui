@@ -1,5 +1,5 @@
-from PySide6.QtCore import Signal, QObject
-from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QGridLayout, QPushButton, QFileDialog
+from PySide6.QtCore import Signal, QObject, QSize
+from PySide6.QtWidgets import QApplication, QLabel, QWidget, QListWidget, QListWidgetItem, QMainWindow, QToolBar, QMessageBox, QDialog, QVBoxLayout, QGridLayout, QPushButton, QFileDialog, QScrollArea, QFrame
 from PySide6.QtGui import QAction
 from graph import graph_panel
 import pypalmsens as ps
@@ -7,11 +7,102 @@ import pypalmsens as ps
 import ps_helpers as pslib
 import sys
 
-PANEL_COLUMNS= 3
+PANEL_COLUMNS = 3
+
+
+APP_STYLESHEET = """
+QMainWindow {
+    background: #f4f6f8;
+}
+
+QToolBar#mainToolbar {
+    background: #ffffff;
+    border: 0;
+    border-bottom: 1px solid #d8dee6;
+    spacing: 6px;
+    padding: 8px 10px;
+}
+
+QToolBar#mainToolbar QToolButton,
+QToolBar#graphToolbar QToolButton,
+QPushButton {
+    background: #ffffff;
+    border: 1px solid #c7d0da;
+    border-radius: 5px;
+    color: #243241;
+    padding: 6px 10px;
+}
+
+QToolBar#mainToolbar QToolButton:hover,
+QToolBar#graphToolbar QToolButton:hover,
+QPushButton:hover {
+    background: #eef4fa;
+    border-color: #8ca3ba;
+}
+
+QToolBar#mainToolbar QToolButton:pressed,
+QToolBar#graphToolbar QToolButton:pressed,
+QPushButton:pressed {
+    background: #dce8f3;
+}
+
+QToolButton:disabled {
+    color: #8a96a3;
+    background: #f5f7f9;
+    border-color: #d8dee6;
+}
+
+QWidget#panelContainer {
+    background: #f4f6f8;
+}
+
+QFrame#graphPanel {
+    background: #ffffff;
+    border: 1px solid #d8dee6;
+    border-radius: 8px;
+}
+
+QLabel#graphPanelTitle {
+    color: #1f2a36;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+QToolBar#graphToolbar {
+    background: transparent;
+    border: 0;
+    spacing: 4px;
+}
+
+QScrollArea#panelScrollArea {
+    background: #f4f6f8;
+    border: 0;
+}
+
+QLabel#connectionIndicator {
+    font-weight: 600;
+    padding: 2px 8px;
+}
+
+QStatusBar {
+    background: #ffffff;
+    border-top: 1px solid #d8dee6;
+}
+
+QListWidget,
+QComboBox {
+    background: #ffffff;
+    border: 1px solid #c7d0da;
+    border-radius: 5px;
+    padding: 4px;
+    selection-background-color: #2f6f9f;
+}
+"""
 
 class connection_indicator(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("connectionIndicator")
         self.set_status(False) # Initierar connection som false
 
     def set_status(self, is_connected: bool, dev: pslib.discovered_device = None):
@@ -104,10 +195,15 @@ class main_window(QMainWindow):
         self.measurements = list()
         self.panels: list[graph_panel] = list()
         self.setWindowTitle("Palmsens demo")
+        self.resize(1200, 760)
+        self.setMinimumSize(900, 600)
 
         self.device_manager = device_manager()
 
         toolbar = QToolBar("Main Toolbar")
+        toolbar.setObjectName("mainToolbar")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(toolbar)
 
         scan_action = QAction("Connect", self)
@@ -141,8 +237,18 @@ class main_window(QMainWindow):
         self.device_manager.connection_changed.connect(self.update_connection)
     
         self.panel_conainer = QWidget()
+        self.panel_conainer.setObjectName("panelContainer")
         self.panel_layout = QGridLayout(self.panel_conainer)
-        self.setCentralWidget(self.panel_conainer)
+        self.panel_layout.setContentsMargins(18, 18, 18, 18)
+        self.panel_layout.setHorizontalSpacing(16)
+        self.panel_layout.setVerticalSpacing(16)
+
+        self.panel_scroll_area = QScrollArea()
+        self.panel_scroll_area.setObjectName("panelScrollArea")
+        self.panel_scroll_area.setWidgetResizable(True)
+        self.panel_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.panel_scroll_area.setWidget(self.panel_conainer)
+        self.setCentralWidget(self.panel_scroll_area)
         # TODO: låt användaren plotta measurements, antingen från en metod som körs eller tex från tidigare session
 
     def scan_devices(self):
@@ -156,6 +262,7 @@ class main_window(QMainWindow):
             )
             return
 
+        selected = None
         dialog = device_selection_dialog(devices, self)
         if dialog.exec():
             selected = dialog.selected_device
@@ -238,6 +345,8 @@ class main_window(QMainWindow):
             row = index // PANEL_COLUMNS
             column = index % PANEL_COLUMNS
             self.panel_layout.addWidget(panel, row, column)
+        for column in range(PANEL_COLUMNS):
+            self.panel_layout.setColumnStretch(column, 1)
 
 
         
@@ -245,6 +354,8 @@ class main_window(QMainWindow):
         
 def main():
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(APP_STYLESHEET)
     window = main_window()
 
     window.show()

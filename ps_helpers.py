@@ -56,7 +56,7 @@ def _channel_sort_key(instrument: ps.Instrument):
 
 
 def find_devices():
-    return [create_mock_device("test device", 5)]
+    return [create_mock_device("test device", 9)]
 
     instruments = ps.discover()
     if not instruments:

@@ -2,14 +2,17 @@ from PySide6.QtWidgets import (
     QWidget,
     QLabel,
     QVBoxLayout,
+    QHBoxLayout,
     QToolBar,
     QDialog,
     QFormLayout,
     QComboBox,
     QDialogButtonBox,
     QMessageBox,
+    QFrame,
+    QSizePolicy,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QAction
 import pyqtgraph as pg
 import ps_helpers as pslib
@@ -18,12 +21,20 @@ import ps_helpers as pslib
 class graph_widget(QWidget):
     def __init__(self):
         super().__init__()
+        self.setObjectName("graphWidget")
         self.measurement = None
         self.x_index = None
         self.y_index = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground("w")
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.25)
+        self.plot_widget.getAxis("bottom").setPen("#7b8794")
+        self.plot_widget.getAxis("left").setPen("#7b8794")
+        self.plot_widget.getAxis("bottom").setTextPen("#56616f")
+        self.plot_widget.getAxis("left").setTextPen("#56616f")
         layout.addWidget(self.plot_widget)
 
     def plot_measurement(self, measurement, x_index=0, y_index=1):
@@ -38,7 +49,8 @@ class graph_widget(QWidget):
         self.plot_widget.clear()
         self.plot_widget.setLabel("bottom", f"{x_array.name}, {x_array.unit}")
         self.plot_widget.setLabel("left", f"{y_array.name}, {y_array.unit}")
-        self.plot_widget.plot(x_array.to_numpy(), y_array.to_numpy())
+        pen = pg.mkPen(color="#2f6f9f", width=2)
+        self.plot_widget.plot(x_array.to_numpy(), y_array.to_numpy(), pen=pen)
 
 
 class axis_selection_dialog(QDialog):
@@ -84,25 +96,41 @@ class axis_selection_dialog(QDialog):
         return f"{index}: {name}"
 
 
-class graph_panel(QWidget):
+class graph_panel(QFrame):
     run_requested = Signal() # Dessa två signaler kan användas senare i main fönstret för att intiera/stoppa measurement
     stop_requested = Signal()
     remove_requested = Signal()
 
     def __init__(self, title):
         super().__init__()
+        self.setObjectName("graphPanel")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.graph = graph_widget()
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
         
         self.title = title
         title_label = QLabel(self.title)
-        layout.addWidget(title_label)
+        title_label.setObjectName("graphPanelTitle")
+        header_layout.addWidget(title_label, 1)
 
         self.toolbar = QToolBar("Graph Utilities", self)
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.graph)
+        self.toolbar.setObjectName("graphToolbar")
+        self.toolbar.setMovable(False)
+        self.toolbar.setIconSize(QSize(16, 16))
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        header_layout.addWidget(self.toolbar, 0, Qt.AlignmentFlag.AlignRight)
+
+        layout.addLayout(header_layout)
+        layout.addWidget(self.graph, 1)
 
         self.run_action = QAction("Run", self)
         self.stop_action = QAction("Stop", self)
