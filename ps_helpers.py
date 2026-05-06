@@ -56,11 +56,11 @@ def _channel_sort_key(instrument: ps.Instrument):
 
 
 def find_devices():
-    return [create_mock_device("test device", 9)]
+    return [create_mock_device("Mock PalmSens", 9)]
 
-    instruments = ps.discover()
+    instruments = ps.discover(ignore_errors=True)
     if not instruments:
-        return instruments
+        return []
     
     grouped_channels: dict[tuple[str, str], list[ps.Instrument]] = {}
 

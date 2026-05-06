@@ -25,6 +25,7 @@ class graph_widget(QWidget):
         self.measurement = None
         self.x_index = None
         self.y_index = None
+        self.live_curve = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -46,11 +47,28 @@ class graph_widget(QWidget):
         x_array = dataset.arrays()[self.x_index]
         y_array = dataset.arrays()[self.y_index]
 
-        self.plot_widget.clear()
+        self._plot_arrays(x_array, y_array)
+
+    def plot_live_data(self, callback_data):
+        self.measurement = None
+        self.x_index = 0
+        self.y_index = 1
+        self._plot_arrays(callback_data.x_array, callback_data.y_array)
+
+    def _plot_arrays(self, x_array, y_array):
+        x_values = x_array.to_numpy()
+        y_values = y_array.to_numpy()
+
         self.plot_widget.setLabel("bottom", f"{x_array.name}, {x_array.unit}")
         self.plot_widget.setLabel("left", f"{y_array.name}, {y_array.unit}")
         pen = pg.mkPen(color="#2f6f9f", width=2)
-        self.plot_widget.plot(x_array.to_numpy(), y_array.to_numpy(), pen=pen)
+
+        if self.live_curve is None:
+            self.plot_widget.clear()
+            self.live_curve = self.plot_widget.plot(x_values, y_values, pen=pen)
+            return
+
+        self.live_curve.setData(x_values, y_values)
 
 
 class axis_selection_dialog(QDialog):
@@ -101,11 +119,13 @@ class graph_panel(QFrame):
     stop_requested = Signal()
     remove_requested = Signal()
 
-    def __init__(self, title):
+    def __init__(self, title, instrument=None):
         super().__init__()
         self.setObjectName("graphPanel")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.instrument = instrument
+        self.base_title = title
 
         self.graph = graph_widget()
 
@@ -117,10 +137,9 @@ class graph_panel(QFrame):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
         
-        self.title = title
-        title_label = QLabel(self.title)
-        title_label.setObjectName("graphPanelTitle")
-        header_layout.addWidget(title_label, 1)
+        self.title_label = QLabel(self.base_title)
+        self.title_label.setObjectName("graphPanelTitle")
+        header_layout.addWidget(self.title_label, 1)
 
         self.toolbar = QToolBar("Graph Utilities", self)
         self.toolbar.setObjectName("graphToolbar")
@@ -146,8 +165,18 @@ class graph_panel(QFrame):
         self.stop_action.triggered.connect(self.stop_requested.emit)
         self.axes_action.triggered.connect(self.edit_axes)
         self.remove_action.triggered.connect(self.remove_requested.emit)
-        
+        self.set_running(False)
 
+    def set_running(self, is_running: bool):
+        self.run_action.setEnabled(not is_running)
+        self.stop_action.setEnabled(is_running)
+        self.remove_action.setEnabled(not is_running)
+
+    def set_status_text(self, status: str | None = None):
+        if status:
+            self.title_label.setText(f"{self.base_title} [{status}]")
+        else:
+            self.title_label.setText(self.base_title)
 
     def edit_axes(self):
         measurement = self.graph.measurement
