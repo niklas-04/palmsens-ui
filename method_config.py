@@ -8,7 +8,7 @@ Parser = Callable[[str], Any]
 Builder = Callable[[dict[str, Any]], object]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass()
 class FieldSpec:
     key: str
     label: str
@@ -26,7 +26,7 @@ class FieldSpec:
             raise ValueError(f"Invalid value for {self.label}: {raw_value}") from exc
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass()
 class MethodSpec:
     key: str
     label: str

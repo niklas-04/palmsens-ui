@@ -611,7 +611,7 @@ class main_window(QMainWindow):
 
     @staticmethod
     def _panel_title(instrument):
-        if getattr(instrument, "channel", -1) > 0:
+        if getattr(instrument, "channel", -1) > 0: # Kolla om multichannel
             return f"CH {instrument.channel}"
         return instrument.name
 

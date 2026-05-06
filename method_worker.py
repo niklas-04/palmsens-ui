@@ -14,7 +14,6 @@ class measurement_worker(QObject):
         self.method = method
         self.manager = None
 
-    @Slot()
     def run(self):
         try:
             with ps.connect(self.instrument) as manager:
@@ -29,7 +28,6 @@ class measurement_worker(QObject):
         except Exception as e:
             self.failed.emit(str(e))
 
-    @Slot()
     def abort(self):
         if self.manager is not None:
             self.manager.abort()
