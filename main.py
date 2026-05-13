@@ -286,6 +286,7 @@ class main_window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.panels: list[graph_panel] = []
+        self.expanded_panel: graph_panel | None = None
         self.active_runs: dict[graph_panel, tuple[QThread, measurement_worker]] = {}
         self.stopping_panels: set[graph_panel] = set()
         self.worker_panels: dict[measurement_worker, graph_panel] = {}
@@ -449,6 +450,9 @@ class main_window(QMainWindow):
         panel.run_requested.connect(lambda panel=panel: self.run_measurement(panel))
         panel.stop_requested.connect(lambda panel=panel: self.stop_measurement(panel))
         panel.remove_requested.connect(lambda panel=panel: self.remove_panel(panel))
+        panel.expand_requested.connect(
+            lambda is_expanded, panel=panel: self.set_panel_expanded(panel, is_expanded)
+        )
         self.panels.append(panel)
         self.refresh_panel_grid()
         return panel
@@ -464,13 +468,44 @@ class main_window(QMainWindow):
             )
             return
 
+        if self.expanded_panel is panel:
+            self.expanded_panel = None
+
         self.panel_layout.removeWidget(panel)
         self.panels.remove(panel)
         panel.deleteLater()
         self.refresh_panel_grid()
 
+    def set_panel_expanded(self, panel: graph_panel, is_expanded: bool):
+        if panel not in self.panels:
+            return
+
+        if is_expanded:
+            previous_panel = self.expanded_panel
+            self.expanded_panel = panel
+            if previous_panel is not None and previous_panel is not panel:
+                previous_panel.set_expanded(False)
+        elif self.expanded_panel is panel:
+            self.expanded_panel = None
+
+        self.refresh_panel_grid()
+
     def refresh_panel_grid(self):
+        for panel in self.panels:
+            self.panel_layout.removeWidget(panel)
+
+        if self.expanded_panel is not None and self.expanded_panel in self.panels:
+            for panel in self.panels:
+                is_expanded = panel is self.expanded_panel
+                panel.set_expanded(is_expanded)
+                panel.setVisible(is_expanded)
+
+            self.panel_layout.addWidget(self.expanded_panel, 0, 0, 1, PANEL_COLUMNS)
+            return
+
         for index, panel in enumerate(self.panels):
+            panel.set_expanded(False)
+            panel.show()
             row = index // PANEL_COLUMNS
             column = index % PANEL_COLUMNS
             self.panel_layout.addWidget(panel, row, column)
@@ -478,6 +513,7 @@ class main_window(QMainWindow):
             self.panel_layout.setColumnStretch(column, 1)
 
     def clear_panels(self):
+        self.expanded_panel = None
         for panel in list(self.panels):
             self.panel_layout.removeWidget(panel)
             self.panels.remove(panel)

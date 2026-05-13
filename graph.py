@@ -118,6 +118,7 @@ class graph_panel(QFrame):
     run_requested = Signal() # Dessa två signaler kan användas senare i main fönstret för att intiera/stoppa measurement
     stop_requested = Signal()
     remove_requested = Signal()
+    expand_requested = Signal(bool)
 
     def __init__(self, title, instrument=None):
         super().__init__()
@@ -153,16 +154,20 @@ class graph_panel(QFrame):
 
         self.run_action = QAction("Run", self)
         self.stop_action = QAction("Stop", self)
+        self.expand_action = QAction("Expand", self)
+        self.expand_action.setCheckable(True)
         self.axes_action = QAction("Edit Axes", self)
         self.remove_action = QAction("Remove", self)
 
         self.toolbar.addAction(self.run_action)
         self.toolbar.addAction(self.stop_action)
+        self.toolbar.addAction(self.expand_action)
         self.toolbar.addAction(self.axes_action)
         self.toolbar.addAction(self.remove_action)
 
         self.run_action.triggered.connect(self.run_requested.emit)
         self.stop_action.triggered.connect(self.stop_requested.emit)
+        self.expand_action.toggled.connect(self.expand_requested.emit)
         self.axes_action.triggered.connect(self.edit_axes)
         self.remove_action.triggered.connect(self.remove_requested.emit)
         self.set_running(False)
@@ -177,6 +182,12 @@ class graph_panel(QFrame):
             self.title_label.setText(f"{self.base_title} [{status}]")
         else:
             self.title_label.setText(self.base_title)
+
+    def set_expanded(self, is_expanded: bool):
+        self.expand_action.blockSignals(True)
+        self.expand_action.setChecked(is_expanded)
+        self.expand_action.setText("Restore" if is_expanded else "Expand")
+        self.expand_action.blockSignals(False)
 
     def edit_axes(self):
         measurement = self.graph.measurement
