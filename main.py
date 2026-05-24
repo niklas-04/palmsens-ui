@@ -1,5 +1,9 @@
+import importlib
+import json
+from pathlib import Path
 import sys
 
+import pypalmsens as ps
 from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -16,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QToolBar,
@@ -122,6 +127,33 @@ QStatusBar {
 """
 
 
+AURORA_VENDOR_ROOT = Path(__file__).resolve().parent / "aurora-unicycler"
+AURORA_DEVICE_OPTIONS = (
+    ("EmStat4 HR", "emstat4_hr"),
+    ("EmStat4 LR", "emstat4_lr"),
+    ("Nexus", "nexus"),
+)
+
+
+def load_aurora_unicycler():
+    aurora_package_root = AURORA_VENDOR_ROOT / "aurora_unicycler"
+    if aurora_package_root.exists():
+        vendor_path = str(AURORA_VENDOR_ROOT)
+        if vendor_path not in sys.path:
+            sys.path.insert(0, vendor_path)
+
+    try:
+        aurora_unicycler = importlib.import_module("aurora_unicycler")
+        palmsens_module = importlib.import_module("aurora_unicycler.palmsens")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Aurora Unicycler is not available. Install `aurora-unicycler` or keep the vendored "
+            "`aurora-unicycler/` directory next to `main.py`."
+        ) from exc
+
+    return aurora_unicycler, palmsens_module.PalmSensDevice
+
+
 class connection_indicator(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -165,24 +197,80 @@ class device_selection_dialog(QDialog):
 
 
 class method_configuration_dialog(QDialog):
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, instrument=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Run Measurement - {title}")
+        self.resize(760, 720)
         self.method = None
+        self.method_label = ""
+        self.instrument = instrument
         self.field_widgets: dict[str, QLineEdit] = {}
+        self.script_drafts = {
+            "aurora_json": self.default_aurora_json(),
+            "aurora_python": self.default_aurora_python(),
+        }
+        self._active_script_mode = None
 
         layout = QVBoxLayout(self)
-        form_layout = QFormLayout()
-        layout.addLayout(form_layout)
+        self.form_layout = QFormLayout()
+        layout.addLayout(self.form_layout)
+
+        self.run_mode_combo = QComboBox(self)
+        self.run_mode_combo.addItem("PalmSens method", "native")
+        self.run_mode_combo.addItem("Aurora Unicycler JSON", "aurora_json")
+        self.run_mode_combo.addItem("Aurora Unicycler Python", "aurora_python")
+        self.form_layout.addRow("Run type", self.run_mode_combo)
 
         self.method_combo = QComboBox(self)
         for method_key in METHOD_ORDER:
             spec = METHOD_SPECS[method_key]
             self.method_combo.addItem(spec.label, method_key)
-        form_layout.addRow("Method", self.method_combo)
+        self.method_combo_label = QLabel("Method", self)
+        self.form_layout.addRow(self.method_combo_label, self.method_combo)
 
         self.field_form = QFormLayout()
         layout.addLayout(self.field_form)
+
+        self.aurora_options = QWidget(self)
+        self.aurora_options_form = QFormLayout(self.aurora_options)
+        self.aurora_options_form.setContentsMargins(0, 0, 0, 0)
+
+        self.aurora_device_combo = QComboBox(self)
+        for label, value in AURORA_DEVICE_OPTIONS:
+            self.aurora_device_combo.addItem(label, value)
+        self.aurora_options_form.addRow("PalmSens target", self.aurora_device_combo)
+
+        self.sample_name_edit = QLineEdit(title, self)
+        self.aurora_options_form.addRow("Sample name", self.sample_name_edit)
+
+        self.capacity_edit = QLineEdit("", self)
+        self.aurora_options_form.addRow("Capacity (mAh)", self.capacity_edit)
+
+        channel_default = "0"
+        if instrument is not None and getattr(instrument, "channel", -1) > 0:
+            channel_default = str(instrument.channel - 1)
+        self.channel_edit = QLineEdit(channel_default, self)
+        self.aurora_options_form.addRow("PGStat channel", self.channel_edit)
+
+        self.scan_step_edit = QLineEdit("", self)
+        self.aurora_options_form.addRow("Scan step voltage (V)", self.scan_step_edit)
+
+        self.eis_dc_potential_edit = QLineEdit("0.0", self)
+        self.aurora_options_form.addRow("EIS DC potential (V)", self.eis_dc_potential_edit)
+
+        self.eis_dc_current_edit = QLineEdit("0.0", self)
+        self.aurora_options_form.addRow("EIS DC current (mA)", self.eis_dc_current_edit)
+
+        layout.addWidget(self.aurora_options)
+
+        self.script_help = QLabel(self)
+        self.script_help.setWordWrap(True)
+        layout.addWidget(self.script_help)
+
+        self.script_editor = QPlainTextEdit(self)
+        self.script_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.script_editor.setMinimumHeight(320)
+        layout.addWidget(self.script_editor, 1)
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -193,10 +281,15 @@ class method_configuration_dialog(QDialog):
         layout.addWidget(button_box)
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
+        self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
         self.rebuild_fields()
+        self.rebuild_mode()
 
     def selected_method_key(self) -> str:
         return self.method_combo.currentData()
+
+    def selected_run_mode(self) -> str:
+        return self.run_mode_combo.currentData()
 
     def raw_params(self) -> dict[str, str]:
         return {
@@ -215,14 +308,206 @@ class method_configuration_dialog(QDialog):
             self.field_widgets[field.key] = widget
             self.field_form.addRow(field.label, widget)
 
+    def rebuild_mode(self):
+        previous_mode = self._active_script_mode
+        if previous_mode in self.script_drafts:
+            self.script_drafts[previous_mode] = self.script_editor.toPlainText()
+
+        run_mode = self.selected_run_mode()
+        native_mode = run_mode == "native"
+
+        self.method_combo_label.setVisible(native_mode)
+        self.method_combo.setVisible(native_mode)
+        for widget in self.field_widgets.values():
+            widget.setVisible(native_mode)
+        for row_index in range(self.field_form.rowCount()):
+            label_item = self.field_form.itemAt(row_index, QFormLayout.ItemRole.LabelRole)
+            field_item = self.field_form.itemAt(row_index, QFormLayout.ItemRole.FieldRole)
+            if label_item is not None and label_item.widget() is not None:
+                label_item.widget().setVisible(native_mode)
+            if field_item is not None and field_item.widget() is not None:
+                field_item.widget().setVisible(native_mode)
+
+        self.aurora_options.setVisible(not native_mode)
+        self.script_help.setVisible(not native_mode)
+        self.script_editor.setVisible(not native_mode)
+
+        if run_mode in self.script_drafts:
+            self.script_editor.setPlainText(self.script_drafts[run_mode])
+            self._active_script_mode = run_mode
+        else:
+            self._active_script_mode = None
+
+        if run_mode == "aurora_json":
+            self.script_help.setText(
+                "Paste an Aurora Unicycler protocol JSON object. The app will validate it, "
+                "convert it to PalmSens MethodSCRIPT, then run it with PyPalmSens."
+            )
+        elif run_mode == "aurora_python":
+            self.script_help.setText(
+                "Paste a Python script that defines `protocol = CyclingProtocol(...)` or a "
+                "`build_protocol()` function returning one. The script runs locally inside the app."
+            )
+
     def validate_and_accept(self):
         try:
-            self.method = build_method(self.selected_method_key(), self.raw_params())
+            run_mode = self.selected_run_mode()
+            if run_mode == "native":
+                self.method = build_method(self.selected_method_key(), self.raw_params())
+                self.method_label = METHOD_SPECS[self.selected_method_key()].label
+            else:
+                self.method = self.build_aurora_method(run_mode)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid parameters", str(exc))
             return
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Aurora setup error", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "Aurora conversion error", str(exc))
+            return
 
         self.accept()
+
+    def build_aurora_method(self, run_mode: str):
+        script_text = self.script_editor.toPlainText().strip()
+        if not script_text:
+            raise ValueError("Aurora script content is required.")
+
+        aurora_unicycler, palm_sens_device_enum = load_aurora_unicycler()
+        protocol = self.build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode, script_text)
+
+        capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
+        channel = self.parse_int(self.channel_edit, "PGStat channel")
+        scan_step_voltage_v = self.parse_optional_float(self.scan_step_edit, "Scan step voltage (V)")
+        eis_dc_potential_v = self.parse_float(self.eis_dc_potential_edit, "EIS DC potential (V)")
+        eis_dc_current_ma = self.parse_float(self.eis_dc_current_edit, "EIS DC current (mA)")
+
+        sample_name = self.sample_name_edit.text().strip() or None
+        device_key = self.aurora_device_combo.currentData()
+        methodscript = protocol.to_palmsens_methodscript(
+            sample_name=sample_name,
+            capacity_mAh=capacity_mAh,
+            device=palm_sens_device_enum(device_key),
+            channel=channel,
+            scan_step_voltage_V=scan_step_voltage_v,
+            eis_dc_potential_V=eis_dc_potential_v,
+            eis_dc_current_mA=eis_dc_current_ma,
+        )
+
+        if not hasattr(ps, "MethodScript"):
+            raise RuntimeError(
+                "This PyPalmSens installation does not expose `MethodScript`. "
+                "Update PyPalmSens before running Aurora-generated scripts."
+            )
+
+        self.method_label = f"Aurora Unicycler ({self.aurora_device_combo.currentText()})"
+        return ps.MethodScript(script=methodscript)
+
+    @staticmethod
+    def build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode: str, script_text: str):
+        if run_mode == "aurora_json":
+            try:
+                protocol_data = json.loads(script_text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid Aurora JSON: {exc.msg}") from exc
+            return aurora_unicycler.CyclingProtocol.from_dict(protocol_data)
+
+        execution_scope = {
+            "__builtins__": __builtins__,
+            "CyclingProtocol": aurora_unicycler.CyclingProtocol,
+            "ConstantCurrent": aurora_unicycler.ConstantCurrent,
+            "ConstantVoltage": aurora_unicycler.ConstantVoltage,
+            "ImpedanceSpectroscopy": aurora_unicycler.ImpedanceSpectroscopy,
+            "Loop": aurora_unicycler.Loop,
+            "OpenCircuitVoltage": aurora_unicycler.OpenCircuitVoltage,
+            "PalmSensDevice": palm_sens_device_enum,
+            "RecordParams": aurora_unicycler.RecordParams,
+            "SafetyParams": aurora_unicycler.SafetyParams,
+            "SampleParams": aurora_unicycler.SampleParams,
+            "Tag": aurora_unicycler.Tag,
+            "VoltageScan": aurora_unicycler.VoltageScan,
+        }
+        exec(script_text, execution_scope, execution_scope)
+
+        protocol = execution_scope.get("protocol")
+        if protocol is None:
+            build_protocol = execution_scope.get("build_protocol")
+            if callable(build_protocol):
+                protocol = build_protocol()
+
+        if protocol is None:
+            raise ValueError(
+                "Aurora Python scripts must define `protocol = CyclingProtocol(...)` "
+                "or `build_protocol()`."
+            )
+
+        if not isinstance(protocol, aurora_unicycler.CyclingProtocol):
+            raise ValueError("Aurora Python script did not produce a CyclingProtocol.")
+
+        return protocol
+
+    @staticmethod
+    def parse_float(widget: QLineEdit, label: str) -> float:
+        raw_value = widget.text().strip()
+        if not raw_value:
+            raise ValueError(f"{label} is required.")
+        try:
+            return float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid value for {label}: {raw_value}") from exc
+
+    @staticmethod
+    def parse_optional_float(widget: QLineEdit, label: str) -> float | None:
+        raw_value = widget.text().strip()
+        if not raw_value:
+            return None
+        try:
+            return float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid value for {label}: {raw_value}") from exc
+
+    @staticmethod
+    def parse_int(widget: QLineEdit, label: str) -> int:
+        raw_value = widget.text().strip()
+        if not raw_value:
+            raise ValueError(f"{label} is required.")
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid value for {label}: {raw_value}") from exc
+
+    @staticmethod
+    def default_aurora_json() -> str:
+        return json.dumps(
+            {
+                "record": {"time_s": 10, "voltage_V": 0.01},
+                "safety": {"max_voltage_V": 4.3, "min_voltage_V": 2.5},
+                "method": [
+                    {"step": "tag", "tag": "cycle"},
+                    {"step": "constant_current", "rate_C": 0.5, "until_voltage_V": 4.2},
+                    {"step": "constant_voltage", "voltage_V": 4.2, "until_rate_C": 0.05},
+                    {"step": "constant_current", "rate_C": -0.5, "until_voltage_V": 3.0},
+                    {"step": "loop", "loop_to": "cycle", "cycle_count": 10},
+                ],
+            },
+            indent=2,
+        )
+
+    @staticmethod
+    def default_aurora_python() -> str:
+        return """protocol = CyclingProtocol(
+    record=RecordParams(time_s=10, voltage_V=0.01),
+    safety=SafetyParams(max_voltage_V=4.3, min_voltage_V=2.5),
+    method=[
+        Tag(tag="cycle"),
+        ConstantCurrent(rate_C=0.5, until_voltage_V=4.2, until_time_s=3 * 60 * 60),
+        ConstantVoltage(voltage_V=4.2, until_rate_C=0.05, until_time_s=60 * 60),
+        ConstantCurrent(rate_C=-0.5, until_voltage_V=3.0, until_time_s=3 * 60 * 60),
+        Loop(loop_to="cycle", cycle_count=10),
+    ],
+)
+"""
 
 
 class list_choices(QWidget):
@@ -531,12 +816,12 @@ class main_window(QMainWindow):
         if panel in self.active_runs:
             return
 
-        dialog = method_configuration_dialog(panel.base_title, self)
+        dialog = method_configuration_dialog(panel.base_title, instrument=panel.instrument, parent=self)
         if not dialog.exec():
             return
 
         method = dialog.method
-        method_label = METHOD_SPECS[dialog.selected_method_key()].label
+        method_label = dialog.method_label
         self.start_measurement(panel, method, method_label)
 
     def start_measurement(self, panel: graph_panel, method, method_label: str):
