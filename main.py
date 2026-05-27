@@ -219,6 +219,7 @@ class method_configuration_dialog(QDialog):
         self.run_mode_combo.addItem("PalmSens method", "native")
         self.run_mode_combo.addItem("Aurora Unicycler JSON", "aurora_json")
         self.run_mode_combo.addItem("Aurora Unicycler Python", "aurora_python")
+        self.run_mode_combo.addItem("MethodScript", "methodscript")
         self.form_layout.addRow("Run type", self.run_mode_combo)
 
         self.method_combo = QComboBox(self)
@@ -315,6 +316,8 @@ class method_configuration_dialog(QDialog):
 
         run_mode = self.selected_run_mode()
         native_mode = run_mode == "native"
+        methodscript_mode = run_mode == "methodscript"
+        print(methodscript_mode)
 
         self.method_combo_label.setVisible(native_mode)
         self.method_combo.setVisible(native_mode)
@@ -328,7 +331,7 @@ class method_configuration_dialog(QDialog):
             if field_item is not None and field_item.widget() is not None:
                 field_item.widget().setVisible(native_mode)
 
-        self.aurora_options.setVisible(not native_mode)
+        self.aurora_options.setVisible(not (native_mode or methodscript_mode))
         self.script_help.setVisible(not native_mode)
         self.script_editor.setVisible(not native_mode)
 
@@ -348,6 +351,11 @@ class method_configuration_dialog(QDialog):
                 "Paste a Python script that defines `protocol = CyclingProtocol(...)` or a "
                 "`build_protocol()` function returning one. The script runs locally inside the app."
             )
+        elif run_mode == "methodscript":
+            # TODO: finish text
+            self.script_help.setText(
+                ""
+            )
 
     def validate_and_accept(self):
         try:
@@ -356,7 +364,7 @@ class method_configuration_dialog(QDialog):
                 self.method = build_method(self.selected_method_key(), self.raw_params())
                 self.method_label = METHOD_SPECS[self.selected_method_key()].label
             else:
-                self.method = self.build_aurora_method(run_mode)
+                self.method = self.build_script_method(run_mode)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid parameters", str(exc))
             return
@@ -368,44 +376,50 @@ class method_configuration_dialog(QDialog):
             return
 
         self.accept()
+                
+    def build_script_method(self, run_mode: str):
+        methodscript = ""
+        script_text = self.script_editor.toPlainText()
+        if not script_text.strip():
+            raise ValueError("script content is required.")
 
-    def build_aurora_method(self, run_mode: str):
-        script_text = self.script_editor.toPlainText().strip()
-        if not script_text:
-            raise ValueError("Aurora script content is required.")
+        if run_mode == "methodscript":
+            self.method_label = "MethodSCRIPT"
+            methodscript = script_text
+        else:
+            aurora_unicycler, palm_sens_device_enum = load_aurora_unicycler()
+            protocol = self.build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode, script_text)
 
-        aurora_unicycler, palm_sens_device_enum = load_aurora_unicycler()
-        protocol = self.build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode, script_text)
+            capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
+            channel = self.parse_int(self.channel_edit, "PGStat channel")
+            scan_step_voltage_v = self.parse_optional_float(self.scan_step_edit, "Scan step voltage (V)")
+            eis_dc_potential_v = self.parse_float(self.eis_dc_potential_edit, "EIS DC potential (V)")
+            eis_dc_current_ma = self.parse_float(self.eis_dc_current_edit, "EIS DC current (mA)")
 
-        capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
-        channel = self.parse_int(self.channel_edit, "PGStat channel")
-        scan_step_voltage_v = self.parse_optional_float(self.scan_step_edit, "Scan step voltage (V)")
-        eis_dc_potential_v = self.parse_float(self.eis_dc_potential_edit, "EIS DC potential (V)")
-        eis_dc_current_ma = self.parse_float(self.eis_dc_current_edit, "EIS DC current (mA)")
-
-        sample_name = self.sample_name_edit.text().strip() or None
-        device_key = self.aurora_device_combo.currentData()
-        methodscript = protocol.to_palmsens_methodscript(
-            sample_name=sample_name,
-            capacity_mAh=capacity_mAh,
-            device=palm_sens_device_enum(device_key),
-            channel=channel,
-            scan_step_voltage_V=scan_step_voltage_v,
-            eis_dc_potential_V=eis_dc_potential_v,
-            eis_dc_current_mA=eis_dc_current_ma,
-        )
-
-        if not hasattr(ps, "MethodScript"):
-            raise RuntimeError(
-                "This PyPalmSens installation does not expose `MethodScript`. "
-                "Update PyPalmSens before running Aurora-generated scripts."
+            sample_name = self.sample_name_edit.text().strip() or None
+            device_key = self.aurora_device_combo.currentData()
+            methodscript = protocol.to_palmsens_methodscript(
+                sample_name=sample_name,
+                capacity_mAh=capacity_mAh,
+                device=palm_sens_device_enum(device_key),
+                channel=channel,
+                scan_step_voltage_V=scan_step_voltage_v,
+                eis_dc_potential_V=eis_dc_potential_v,
+                eis_dc_current_mA=eis_dc_current_ma,
             )
 
-        self.method_label = f"Aurora Unicycler ({self.aurora_device_combo.currentText()})"
+            if not hasattr(ps, "MethodScript"):
+                raise RuntimeError(
+                    "This PyPalmSens installation does not expose `MethodScript`. "
+                    "Update PyPalmSens before running Aurora-generated scripts."
+                )
+
+            self.method_label = f"Aurora Unicycler ({self.aurora_device_combo.currentText()})"
         return ps.MethodScript(script=methodscript)
 
     @staticmethod
     def build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode: str, script_text: str):
+        # Path 1: JSON
         if run_mode == "aurora_json":
             try:
                 protocol_data = json.loads(script_text)
@@ -413,6 +427,7 @@ class method_configuration_dialog(QDialog):
                 raise ValueError(f"Invalid Aurora JSON: {exc.msg}") from exc
             return aurora_unicycler.CyclingProtocol.from_dict(protocol_data)
 
+        # Path 2: Python
         execution_scope = {
             "__builtins__": __builtins__,
             "CyclingProtocol": aurora_unicycler.CyclingProtocol,
@@ -447,6 +462,7 @@ class method_configuration_dialog(QDialog):
 
         return protocol
 
+    # Start of parsing helpers
     @staticmethod
     def parse_float(widget: QLineEdit, label: str) -> float:
         raw_value = widget.text().strip()
@@ -476,6 +492,7 @@ class method_configuration_dialog(QDialog):
             return int(raw_value)
         except ValueError as exc:
             raise ValueError(f"Invalid value for {label}: {raw_value}") from exc
+    # End of parsing helpers
 
     @staticmethod
     def default_aurora_json() -> str:
