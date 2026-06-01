@@ -626,10 +626,6 @@ class main_window(QMainWindow):
         self.save_action.triggered.connect(self.save_session)
         toolbar.addAction(self.save_action)
 
-        self.add_panel_action = QAction("Add panel", self)
-        self.add_panel_action.triggered.connect(self.add_panel)
-        toolbar.addAction(self.add_panel_action)
-
         self.connection_indicator = connection_indicator()
         self.statusBar().addPermanentWidget(self.connection_indicator)
 
@@ -719,11 +715,26 @@ class main_window(QMainWindow):
             return
 
         measurements = pslib.load_session(file_path)
-        missing_panel_count = len(measurements) - len(self.panels)
-        for _ in range(max(0, missing_panel_count)):
-            self.add_panel()
+        if not self.panels:
+            QMessageBox.warning(
+                self,
+                "No channels available",
+                "Connect to a device before opening a session.",
+            )
+            return
 
-        for index, measurement in enumerate(measurements):
+        if len(measurements) > len(self.panels):
+            QMessageBox.warning(
+                self,
+                "Too many measurements",
+                (
+                    f"The session contains {len(measurements)} measurements, but only "
+                    f"{len(self.panels)} channel panels are available. Only the first "
+                    f"{len(self.panels)} measurements will be loaded."
+                ),
+            )
+
+        for index, measurement in enumerate(measurements[: len(self.panels)]):
             self.panels[index].graph.plot_measurement(measurement)
             self.panels[index].set_status_text(None)
 
@@ -751,32 +762,12 @@ class main_window(QMainWindow):
         panel = graph_panel(title, instrument=instrument)
         panel.run_requested.connect(lambda panel=panel: self.run_measurement(panel))
         panel.stop_requested.connect(lambda panel=panel: self.stop_measurement(panel))
-        panel.remove_requested.connect(lambda panel=panel: self.remove_panel(panel))
         panel.expand_requested.connect(
             lambda is_expanded, panel=panel: self.set_panel_expanded(panel, is_expanded)
         )
         self.panels.append(panel)
         self.refresh_panel_grid()
         return panel
-
-    def remove_panel(self, panel):
-        if panel not in self.panels:
-            return
-        if panel in self.active_runs:
-            QMessageBox.warning(
-                self,
-                "Measurement running",
-                "Stop the active measurement before removing this panel.",
-            )
-            return
-
-        if self.expanded_panel is panel:
-            self.expanded_panel = None
-
-        self.panel_layout.removeWidget(panel)
-        self.panels.remove(panel)
-        panel.deleteLater()
-        self.refresh_panel_grid()
 
     def set_panel_expanded(self, panel: graph_panel, is_expanded: bool):
         if panel not in self.panels:
