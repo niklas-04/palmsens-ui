@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThrea
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -195,6 +196,88 @@ class device_selection_dialog(QDialog):
             return
 
         self.selected_device = dev
+        self.accept()
+
+
+class bdf_export_dialog(QDialog):
+    def __init__(self, exportable_panels, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export BDF")
+        self.resize(420, 360)
+        self._checkboxes: list[tuple[QCheckBox, object]] = []
+
+        layout = QVBoxLayout(self)
+
+        info_label = QLabel(
+            "Select the channel measurements to export as BDF skeleton files. "
+            "Only channels with loaded measurements are listed.",
+            self,
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self.output_dir_edit = QLineEdit(self)
+        browse_button = QPushButton("Choose Folder", self)
+        browse_button.clicked.connect(self.choose_output_dir)
+
+        output_row = QWidget(self)
+        output_row_layout = QGridLayout(output_row)
+        output_row_layout.setContentsMargins(0, 0, 0, 0)
+        output_row_layout.setHorizontalSpacing(8)
+        output_row_layout.addWidget(self.output_dir_edit, 0, 0)
+        output_row_layout.addWidget(browse_button, 0, 1)
+        output_row_layout.setColumnStretch(0, 1)
+        layout.addWidget(output_row)
+
+        self.checkbox_container = QWidget(self)
+        self.checkbox_layout = QVBoxLayout(self.checkbox_container)
+        self.checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        self.checkbox_layout.setSpacing(6)
+
+        for panel in exportable_panels:
+            checkbox = QCheckBox(panel.base_title, self.checkbox_container)
+            checkbox.setChecked(True)
+            self._checkboxes.append((checkbox, panel))
+            self.checkbox_layout.addWidget(checkbox)
+
+        self.checkbox_layout.addStretch(1)
+        layout.addWidget(self.checkbox_container, 1)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        export_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if export_button is not None:
+            export_button.setText("Export")
+        button_box.accepted.connect(self.validate_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def choose_output_dir(self):
+        directory = QFileDialog.getExistingDirectory(self, "Choose export folder")
+        if directory:
+            self.output_dir_edit.setText(directory)
+
+    def selected_panels(self):
+        return [panel for checkbox, panel in self._checkboxes if checkbox.isChecked()]
+
+    def output_directory(self) -> Path | None:
+        raw_path = self.output_dir_edit.text().strip()
+        if not raw_path:
+            return None
+        return Path(raw_path)
+
+    def validate_and_accept(self):
+        output_dir = self.output_directory()
+        if output_dir is None:
+            QMessageBox.warning(self, "Export error", "Choose an export folder.")
+            return
+
+        if not self.selected_panels():
+            QMessageBox.warning(self, "Export error", "Select at least one channel to export.")
+            return
+
         self.accept()
 
 
@@ -736,6 +819,11 @@ class main_window(QMainWindow):
         self.session_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         toolbar.addWidget(self.session_button)
 
+        self.export_bdf_action = QAction("Export BDF", self)
+        self.export_bdf_action.setStatusTip("Export selected channel measurements as BDF skeleton files")
+        self.export_bdf_action.triggered.connect(self.export_bdf)
+        toolbar.addAction(self.export_bdf_action)
+
         self.connection_indicator = connection_indicator()
         self.statusBar().addPermanentWidget(self.connection_indicator)
 
@@ -872,6 +960,35 @@ class main_window(QMainWindow):
             return
 
         pslib.save_session(file_path, measurements)
+
+    def export_bdf(self):
+        exportable_panels = self._exportable_panels()
+        if not exportable_panels:
+            QMessageBox.warning(self, "Export error", "No channel measurements available to export.")
+            return
+
+        dialog = bdf_export_dialog(exportable_panels, self)
+        if not dialog.exec():
+            return
+
+        output_dir = dialog.output_directory()
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            written_files = []
+            for panel in dialog.selected_panels():
+                output_path = self._bdf_output_path(output_dir, panel.base_title)
+                self._write_bdf_skeleton(output_path, panel)
+                written_files.append(output_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", f"Failed to export BDF skeleton files:\n{exc}")
+            return
+
+        self.statusBar().showMessage(f"Exported {len(written_files)} BDF skeleton file(s).", 5000)
+        QMessageBox.information(
+            self,
+            "Export complete",
+            f"Exported {len(written_files)} BDF skeleton file(s) to:\n{output_dir}",
+        )
 
     def add_panel(self, title=None, instrument=None):
         if title is None:
@@ -1055,6 +1172,34 @@ class main_window(QMainWindow):
             for panel in self.panels
             if panel.graph.measurement is not None
         ]
+
+    def _exportable_panels(self):
+        return [
+            panel
+            for panel in self.panels
+            if panel.graph.measurement is not None
+        ]
+
+    @staticmethod
+    def _sanitize_export_name(name: str) -> str:
+        cleaned = "".join(character if character.isalnum() else "_" for character in name.strip())
+        cleaned = cleaned.strip("_")
+        return cleaned or "channel"
+
+    def _bdf_output_path(self, output_dir: Path, base_title: str) -> Path:
+        stem = self._sanitize_export_name(base_title)
+        candidate = output_dir / f"{stem}.bdf.csv"
+        suffix = 2
+        while candidate.exists():
+            candidate = output_dir / f"{stem}_{suffix}.bdf.csv"
+            suffix += 1
+        return candidate
+
+    @staticmethod
+    def _write_bdf_skeleton(path: Path, panel: graph_panel):
+        del panel
+        header = "Test Time / s,Voltage / V,Current / A\n"
+        path.write_text(header, encoding="utf-8")
 
     @staticmethod
     def _panel_title(instrument):
