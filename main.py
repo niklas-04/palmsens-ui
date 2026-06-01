@@ -19,10 +19,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -201,6 +203,7 @@ class method_configuration_dialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Run Measurement - {title}")
         self.resize(760, 720)
+        self.dialog_title = title
         self.method = None
         self.method_label = ""
         self.instrument = instrument
@@ -268,6 +271,15 @@ class method_configuration_dialog(QDialog):
         self.script_help.setWordWrap(True)
         layout.addWidget(self.script_help)
 
+        self.script_actions = QWidget(self)
+        self.script_actions_layout = QVBoxLayout(self.script_actions)
+        self.script_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.script_actions_layout.setSpacing(0)
+        self.load_methodscript_button = QPushButton("Load MethodSCRIPT", self.script_actions)
+        self.load_methodscript_button.clicked.connect(self.load_methodscript)
+        self.script_actions_layout.addWidget(self.load_methodscript_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.script_actions)
+
         self.script_editor = QPlainTextEdit(self)
         self.script_editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.script_editor.setMinimumHeight(320)
@@ -277,6 +289,11 @@ class method_configuration_dialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
         )
+        self.run_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if self.run_button is not None:
+            self.run_button.setText("Run")
+        self.save_script_button = button_box.addButton("Save MethodSCRIPT", QDialogButtonBox.ButtonRole.ActionRole)
+        self.save_script_button.clicked.connect(self.save_methodscript)
         button_box.accepted.connect(self.validate_and_accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
@@ -317,7 +334,6 @@ class method_configuration_dialog(QDialog):
         run_mode = self.selected_run_mode()
         native_mode = run_mode == "native"
         methodscript_mode = run_mode == "methodscript"
-        print(methodscript_mode)
 
         self.method_combo_label.setVisible(native_mode)
         self.method_combo.setVisible(native_mode)
@@ -333,6 +349,7 @@ class method_configuration_dialog(QDialog):
 
         self.aurora_options.setVisible(not (native_mode or methodscript_mode))
         self.script_help.setVisible(not native_mode)
+        self.script_actions.setVisible(methodscript_mode)
         self.script_editor.setVisible(not native_mode)
 
         if run_mode in self.script_drafts:
@@ -352,10 +369,11 @@ class method_configuration_dialog(QDialog):
                 "`build_protocol()` function returning one. The script runs locally inside the app."
             )
         elif run_mode == "methodscript":
-            # TODO: finish text
             self.script_help.setText(
-                ""
+                "Paste MethodSCRIPT directly or load an existing .mscr file, then run it with PyPalmSens."
             )
+
+        self.save_script_button.setVisible(run_mode in {"aurora_json", "aurora_python"})
 
     def validate_and_accept(self):
         try:
@@ -378,36 +396,10 @@ class method_configuration_dialog(QDialog):
         self.accept()
                 
     def build_script_method(self, run_mode: str):
-        methodscript = ""
-        script_text = self.script_editor.toPlainText()
-        if not script_text.strip():
-            raise ValueError("script content is required.")
-
+        methodscript = self.generate_methodscript(run_mode)
         if run_mode == "methodscript":
             self.method_label = "MethodSCRIPT"
-            methodscript = script_text
         else:
-            aurora_unicycler, palm_sens_device_enum = load_aurora_unicycler()
-            protocol = self.build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode, script_text)
-
-            capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
-            channel = self.parse_int(self.channel_edit, "PGStat channel")
-            scan_step_voltage_v = self.parse_optional_float(self.scan_step_edit, "Scan step voltage (V)")
-            eis_dc_potential_v = self.parse_float(self.eis_dc_potential_edit, "EIS DC potential (V)")
-            eis_dc_current_ma = self.parse_float(self.eis_dc_current_edit, "EIS DC current (mA)")
-
-            sample_name = self.sample_name_edit.text().strip() or None
-            device_key = self.aurora_device_combo.currentData()
-            methodscript = protocol.to_palmsens_methodscript(
-                sample_name=sample_name,
-                capacity_mAh=capacity_mAh,
-                device=palm_sens_device_enum(device_key),
-                channel=channel,
-                scan_step_voltage_V=scan_step_voltage_v,
-                eis_dc_potential_V=eis_dc_potential_v,
-                eis_dc_current_mA=eis_dc_current_ma,
-            )
-
             if not hasattr(ps, "MethodScript"):
                 raise RuntimeError(
                     "This PyPalmSens installation does not expose `MethodScript`. "
@@ -416,6 +408,117 @@ class method_configuration_dialog(QDialog):
 
             self.method_label = f"Aurora Unicycler ({self.aurora_device_combo.currentText()})"
         return ps.MethodScript(script=methodscript)
+
+    def generate_methodscript(self, run_mode: str) -> str:
+        script_text = self.script_editor.toPlainText()
+        if not script_text.strip():
+            raise ValueError("script content is required.")
+
+        if run_mode == "methodscript":
+            return script_text
+
+        if run_mode not in {"aurora_json", "aurora_python"}:
+            raise ValueError("MethodSCRIPT export is only available for Aurora modes.")
+
+        aurora_unicycler, palm_sens_device_enum = load_aurora_unicycler()
+        protocol = self.build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode, script_text)
+
+        capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
+        channel = self.parse_int(self.channel_edit, "PGStat channel")
+        scan_step_voltage_v = self.parse_optional_float(self.scan_step_edit, "Scan step voltage (V)")
+        eis_dc_potential_v = self.parse_float(self.eis_dc_potential_edit, "EIS DC potential (V)")
+        eis_dc_current_ma = self.parse_float(self.eis_dc_current_edit, "EIS DC current (mA)")
+
+        sample_name = self.sample_name_edit.text().strip() or None
+        device_key = self.aurora_device_combo.currentData()
+        return protocol.to_palmsens_methodscript(
+            sample_name=sample_name,
+            capacity_mAh=capacity_mAh,
+            device=palm_sens_device_enum(device_key),
+            channel=channel,
+            scan_step_voltage_V=scan_step_voltage_v,
+            eis_dc_potential_V=eis_dc_potential_v,
+            eis_dc_current_mA=eis_dc_current_ma,
+        )
+
+    def save_methodscript(self):
+        run_mode = self.selected_run_mode()
+        if run_mode not in {"aurora_json", "aurora_python"}:
+            QMessageBox.information(
+                self,
+                "Save unavailable",
+                "MethodSCRIPT saving is currently only available for the Aurora modes.",
+            )
+            return
+
+        try:
+            methodscript = self.generate_methodscript(run_mode)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid parameters", str(exc))
+            return
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Aurora setup error", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "Aurora conversion error", str(exc))
+            return
+
+        sample_name = self.sample_name_edit.text().strip()
+        default_name = sample_name or self.dialog_title.replace(" ", "_")
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save MethodSCRIPT",
+            f"{default_name}.mscr",
+            "MethodSCRIPT Files (*.mscr);;Text Files (*.txt);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        path = Path(file_path)
+        if path.suffix == "":
+            path = path.with_suffix(".mscr")
+
+        try:
+            path.write_text(methodscript, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Save failed",
+                f"Could not save MethodSCRIPT:\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "MethodSCRIPT saved",
+            f"Saved MethodSCRIPT to:\n{path}",
+        )
+
+    def load_methodscript(self):
+        if self.selected_run_mode() != "methodscript":
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load MethodSCRIPT",
+            "",
+            "MethodSCRIPT Files (*.mscr);;Text Files (*.txt);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        path = Path(file_path)
+        try:
+            script_text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Load failed",
+                f"Could not load MethodSCRIPT:\n{exc}",
+            )
+            return
+
+        self.script_editor.setPlainText(script_text)
 
     @staticmethod
     def build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode: str, script_text: str):
@@ -618,13 +721,20 @@ class main_window(QMainWindow):
         self.disconnect_action.triggered.connect(self.request_disconnect)
         toolbar.addAction(self.disconnect_action)
 
-        self.open_action = QAction("Open session", self)
+        self.session_menu = QMenu("Session", self)
+        self.open_action = QAction("Load session", self)
         self.open_action.triggered.connect(self.open_session)
-        toolbar.addAction(self.open_action)
+        self.session_menu.addAction(self.open_action)
 
         self.save_action = QAction("Save session", self)
         self.save_action.triggered.connect(self.save_session)
-        toolbar.addAction(self.save_action)
+        self.session_menu.addAction(self.save_action)
+
+        self.session_button = QToolButton(self)
+        self.session_button.setText("Session")
+        self.session_button.setMenu(self.session_menu)
+        self.session_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        toolbar.addWidget(self.session_button)
 
         self.connection_indicator = connection_indicator()
         self.statusBar().addPermanentWidget(self.connection_indicator)
@@ -705,6 +815,14 @@ class main_window(QMainWindow):
         self.clear_panels()
 
     def open_session(self):
+        if self.active_runs:
+            QMessageBox.warning(
+                self,
+                "Measurement running",
+                "Stop the active measurement before opening a session.",
+            )
+            return
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select a file",
