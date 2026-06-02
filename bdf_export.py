@@ -70,7 +70,9 @@ def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem
     for group in groups:
         series = _extract_required_series(group)
         dataframe = _build_dataframe(series)
-        bdf.validate(dataframe, raise_on_error=True)
+        res = bdf.validate(dataframe, raise_on_error=True)
+        if not res["ok"]:
+            pass
         stem = filename_stem
         if multiple_groups:
             stem = f"{filename_stem}_group_{group['id']}"
