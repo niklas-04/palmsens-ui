@@ -1,9 +1,9 @@
-import importlib
 import json
 from pathlib import Path
-import sys
 
+import aurora_unicycler
 import pypalmsens as ps
+from aurora_unicycler.palmsens import PalmSensDevice
 
 from bdf_export import BdfExportError, export_measurement_to_bdf_files
 from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread
@@ -131,32 +131,11 @@ QStatusBar {
 }
 """
 
-
-AURORA_VENDOR_ROOT = Path(__file__).resolve().parent / "aurora-unicycler"
 AURORA_DEVICE_OPTIONS = (
     ("EmStat4 HR", "emstat4_hr"),
     ("EmStat4 LR", "emstat4_lr"),
     ("Nexus", "nexus"),
 )
-
-
-def load_aurora_unicycler():
-    aurora_package_root = AURORA_VENDOR_ROOT / "aurora_unicycler"
-    if aurora_package_root.exists():
-        vendor_path = str(AURORA_VENDOR_ROOT)
-        if vendor_path not in sys.path:
-            sys.path.insert(0, vendor_path)
-
-    try:
-        aurora_unicycler = importlib.import_module("aurora_unicycler")
-        palmsens_module = importlib.import_module("aurora_unicycler.palmsens")
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Aurora Unicycler is not available. Install `aurora-unicycler` or keep the vendored "
-            "`aurora-unicycler/` directory next to `main.py`."
-        ) from exc
-
-    return aurora_unicycler, palmsens_module.PalmSensDevice
 
 
 class connection_indicator(QLabel):
@@ -505,8 +484,7 @@ class method_configuration_dialog(QDialog):
         if run_mode not in {"aurora_json", "aurora_python"}:
             raise ValueError("MethodSCRIPT export is only available for Aurora modes.")
 
-        aurora_unicycler, palm_sens_device_enum = load_aurora_unicycler()
-        protocol = self.build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode, script_text)
+        protocol = self.build_aurora_protocol(aurora_unicycler, PalmSensDevice, run_mode, script_text)
 
         capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
         channel = self.parse_int(self.channel_edit, "PGStat channel")
@@ -519,7 +497,7 @@ class method_configuration_dialog(QDialog):
         return protocol.to_palmsens_methodscript(
             sample_name=sample_name,
             capacity_mAh=capacity_mAh,
-            device=palm_sens_device_enum(device_key),
+            device=PalmSensDevice(device_key),
             channel=channel,
             scan_step_voltage_V=scan_step_voltage_v,
             eis_dc_potential_V=eis_dc_potential_v,
@@ -1222,7 +1200,7 @@ class main_window(QMainWindow):
 
 
 def main():
-    app = QApplication(sys.argv)
+    app = QApplication()
     app.setStyleSheet(APP_STYLESHEET)
     window = main_window()
     window.show()

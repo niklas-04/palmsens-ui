@@ -9,9 +9,13 @@ dependencies = [
 	"PySide6",
 	"PyPalmSens",
 	"pyqtgraph",
-	"pandas"
-	"batterydf"
+	"pandas",
+	"batterydf",
+	"aurora-unicycler"
 ]
 
+[tool.uv.sources]
+aurora-unicycler = { path = "./aurora-unicycler", editable = true }
+
 [tool.setuptools]
-py-modules = ["main", "ps_helpers", "bdf_export.py", "method_config.py", "method_worker.py"]
+py-modules = ["main", "ps_helpers", "bdf_export", "method_config", "method_worker"]
