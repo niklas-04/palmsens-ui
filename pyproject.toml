@@ -8,9 +8,10 @@ version = "0.1.0"
 dependencies = [
 	"PySide6",
 	"PyPalmSens",
-	"pyqtgraph"
-
+	"pyqtgraph",
+	"pandas"
+	"batterydf"
 ]
 
 [tool.setuptools]
-py-modules = ["main", "ps_helpers"]
+py-modules = ["main", "ps_helpers", "bdf_export.py", "method_config.py", "method_worker.py"]

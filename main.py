@@ -4,6 +4,8 @@ from pathlib import Path
 import sys
 
 import pypalmsens as ps
+
+from bdf_export import BdfExportError, export_measurement_to_bdf_files
 from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -209,7 +211,7 @@ class bdf_export_dialog(QDialog):
         layout = QVBoxLayout(self)
 
         info_label = QLabel(
-            "Select the channel measurements to export as BDF skeleton files. "
+            "Select the channel measurements to export as BDF files. "
             "Only channels with loaded measurements are listed.",
             self,
         )
@@ -236,7 +238,7 @@ class bdf_export_dialog(QDialog):
 
         for panel in exportable_panels:
             checkbox = QCheckBox(panel.base_title, self.checkbox_container)
-            checkbox.setChecked(True)
+            checkbox.setChecked(False)
             self._checkboxes.append((checkbox, panel))
             self.checkbox_layout.addWidget(checkbox)
 
@@ -820,7 +822,7 @@ class main_window(QMainWindow):
         toolbar.addWidget(self.session_button)
 
         self.export_bdf_action = QAction("Export BDF", self)
-        self.export_bdf_action.setStatusTip("Export selected channel measurements as BDF skeleton files")
+        self.export_bdf_action.setStatusTip("Export selected channel measurements as BDF files")
         self.export_bdf_action.triggered.connect(self.export_bdf)
         toolbar.addAction(self.export_bdf_action)
 
@@ -976,18 +978,26 @@ class main_window(QMainWindow):
             output_dir.mkdir(parents=True, exist_ok=True)
             written_files = []
             for panel in dialog.selected_panels():
-                output_path = self._bdf_output_path(output_dir, panel.base_title)
-                self._write_bdf_skeleton(output_path, panel)
-                written_files.append(output_path)
+                filename_stem = self._panel_export_stem(panel)
+                written_files.extend(
+                    export_measurement_to_bdf_files(
+                        panel.graph.measurement,
+                        output_dir,
+                        filename_stem,
+                    )
+                )
+        except BdfExportError as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
         except Exception as exc:
-            QMessageBox.critical(self, "Export failed", f"Failed to export BDF skeleton files:\n{exc}")
+            QMessageBox.critical(self, "Export failed", f"Failed to export BDF files:\n{exc}")
             return
 
-        self.statusBar().showMessage(f"Exported {len(written_files)} BDF skeleton file(s).", 5000)
+        self.statusBar().showMessage(f"Exported {len(written_files)} BDF file(s).", 5000)
         QMessageBox.information(
             self,
             "Export complete",
-            f"Exported {len(written_files)} BDF skeleton file(s) to:\n{output_dir}",
+            f"Exported {len(written_files)} BDF file(s) to:\n{output_dir}",
         )
 
     def add_panel(self, title=None, instrument=None):
@@ -1186,20 +1196,11 @@ class main_window(QMainWindow):
         cleaned = cleaned.strip("_")
         return cleaned or "channel"
 
-    def _bdf_output_path(self, output_dir: Path, base_title: str) -> Path:
-        stem = self._sanitize_export_name(base_title)
-        candidate = output_dir / f"{stem}.bdf.csv"
-        suffix = 2
-        while candidate.exists():
-            candidate = output_dir / f"{stem}_{suffix}.bdf.csv"
-            suffix += 1
-        return candidate
-
-    @staticmethod
-    def _write_bdf_skeleton(path: Path, panel: graph_panel):
-        del panel
-        header = "Test Time / s,Voltage / V,Current / A\n"
-        path.write_text(header, encoding="utf-8")
+    def _panel_export_stem(self, panel: graph_panel) -> str:
+        instrument = panel.instrument
+        if instrument is not None and getattr(instrument, "channel", -1) > 0:
+            return f"CH_{instrument.channel}"
+        return self._sanitize_export_name(panel.base_title)
 
     @staticmethod
     def _panel_title(instrument):
