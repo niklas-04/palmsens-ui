@@ -137,6 +137,26 @@ AURORA_DEVICE_OPTIONS = (
     ("Nexus", "nexus"),
 )
 
+AURORA_ADDITIONAL_MEASUREMENT_OPTIONS = (
+    ("ab", "ab Potential"),
+    ("ac", "ac CE potential"),
+    ("ae", "ae RE potential"),
+    ("ag", "ag WE vs CE"),
+    ("as", "as Analog input 0"),
+    ("ah", "ah S2 vs RE"),
+    ("ai", "ai SE vs S2"),
+    ("ba", "ba Current"),
+    ("bb", "bb Bipot current"),
+    ("ed", "ed Temperature"),
+    ("ef", "ef Board temperature"),
+)
+
+AURORA_DEVICE_MEASUREMENT_TYPES = {
+    "emstat4_hr": {"ab", "ac", "ae", "ag", "as", "ba"},
+    "emstat4_lr": {"ab", "ac", "ae", "ag", "as", "ba"},
+    "nexus": {"ab", "ac", "ag", "as", "ah", "ai", "ba", "bb", "ed", "ef"},
+}
+
 
 class connection_indicator(QLabel):
     def __init__(self, parent=None):
@@ -308,6 +328,20 @@ class method_configuration_dialog(QDialog):
             self.aurora_device_combo.addItem(label, value)
         self.aurora_options_form.addRow("PalmSens target", self.aurora_device_combo)
 
+        self.additional_measurement_checks: dict[str, QCheckBox] = {}
+        self.additional_measurement_widget = QWidget(self)
+        self.additional_measurement_layout = QGridLayout(self.additional_measurement_widget)
+        self.additional_measurement_layout.setContentsMargins(0, 0, 0, 0)
+        self.additional_measurement_layout.setHorizontalSpacing(12)
+        self.additional_measurement_layout.setVerticalSpacing(4)
+        for index, (var_type, label) in enumerate(AURORA_ADDITIONAL_MEASUREMENT_OPTIONS):
+            checkbox = QCheckBox(label, self.additional_measurement_widget)
+            checkbox.setChecked(False)
+            checkbox.setToolTip(f"Measure MethodSCRIPT variable type {var_type} with add_meas.")
+            self.additional_measurement_checks[var_type] = checkbox
+            self.additional_measurement_layout.addWidget(checkbox, index // 2, index % 2)
+        self.aurora_options_form.addRow("Extra measurements", self.additional_measurement_widget)
+
         self.sample_name_edit = QLineEdit(title, self)
         self.aurora_options_form.addRow("Sample name", self.sample_name_edit)
 
@@ -364,7 +398,9 @@ class method_configuration_dialog(QDialog):
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
         self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
+        self.aurora_device_combo.currentIndexChanged.connect(self.update_additional_measurements)
         self.rebuild_fields()
+        self.update_additional_measurements()
         self.rebuild_mode()
 
     def selected_method_key(self) -> str:
@@ -378,6 +414,22 @@ class method_configuration_dialog(QDialog):
             field_key: widget.text().strip()
             for field_key, widget in self.field_widgets.items()
         }
+
+    def selected_additional_measurements(self) -> tuple[str, ...]:
+        return tuple(
+            var_type
+            for var_type, checkbox in self.additional_measurement_checks.items()
+            if checkbox.isEnabled() and checkbox.isChecked()
+        )
+
+    def update_additional_measurements(self):
+        device_key = self.aurora_device_combo.currentData()
+        supported = AURORA_DEVICE_MEASUREMENT_TYPES.get(device_key, set())
+        for var_type, checkbox in self.additional_measurement_checks.items():
+            is_supported = var_type in supported
+            checkbox.setEnabled(is_supported)
+            if not is_supported:
+                checkbox.setChecked(False)
 
     def rebuild_fields(self):
         while self.field_form.rowCount():
@@ -502,6 +554,7 @@ class method_configuration_dialog(QDialog):
             scan_step_voltage_V=scan_step_voltage_v,
             eis_dc_potential_V=eis_dc_potential_v,
             eis_dc_current_mA=eis_dc_current_ma,
+            additional_measurements=self.selected_additional_measurements(),
         )
 
     def save_methodscript(self):
