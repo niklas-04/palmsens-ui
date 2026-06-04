@@ -1,13 +1,12 @@
-import json
+import sys
 from pathlib import Path
 
-import aurora_unicycler
 import pypalmsens as ps
-from aurora_unicycler.palmsens import PalmSensDevice
-from aurora_builder import AuroraVisualBuilder
+from app_style import APP_STYLESHEET
+from aurora_methods import load_aurora_package, render_aurora_package_for_channel
 
 from bdf_export import BdfExportError, export_measurement_to_bdf_files
-from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread
+from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread, QProcess
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -41,185 +39,6 @@ from method_worker import measurement_worker
 import ps_helpers as pslib
 
 PANEL_COLUMNS = 3
-
-
-APP_STYLESHEET = """
-QMainWindow {
-    background: #f4f6f8;
-}
-
-QDialog#methodConfigDialog {
-    background: #eef2f6;
-}
-
-QToolBar#mainToolbar {
-    background: #ffffff;
-    border: 0;
-    border-bottom: 1px solid #d8dee6;
-    spacing: 6px;
-    padding: 8px 10px;
-}
-
-QToolBar#mainToolbar QToolButton,
-QToolBar#graphToolbar QToolButton,
-QPushButton {
-    background: #ffffff;
-    border: 1px solid #c7d0da;
-    border-radius: 7px;
-    color: #243241;
-    padding: 6px 12px;
-}
-
-QToolBar#mainToolbar QToolButton:hover,
-QToolBar#graphToolbar QToolButton:hover,
-QPushButton:hover {
-    background: #eef4fa;
-    border-color: #8ca3ba;
-}
-
-QToolBar#mainToolbar QToolButton:pressed,
-QToolBar#graphToolbar QToolButton:pressed,
-QPushButton:pressed {
-    background: #dce8f3;
-}
-
-QToolButton:disabled {
-    color: #8a96a3;
-    background: #f5f7f9;
-    border-color: #d8dee6;
-}
-
-QWidget#panelContainer {
-    background: #f4f6f8;
-}
-
-QFrame#graphPanel {
-    background: #ffffff;
-    border: 1px solid #d8dee6;
-    border-radius: 8px;
-}
-
-QFrame#auroraSection,
-QFrame#auroraStepCard,
-QFrame#auroraOptionsCard {
-    background: #ffffff;
-    border: 1px solid #d8dee6;
-    border-radius: 12px;
-}
-
-QFrame#auroraStepCard {
-    border-color: #e4ebf2;
-    border-radius: 10px;
-}
-
-QLabel#graphPanelTitle {
-    color: #1f2a36;
-    font-size: 14px;
-    font-weight: 700;
-}
-
-QLabel#auroraSectionTitle,
-QLabel#auroraStepTitle,
-QLabel#auroraCardTitle {
-    color: #1f2a36;
-    font-size: 13px;
-    font-weight: 700;
-}
-
-QLabel#auroraStepSummary,
-QLabel#auroraCardDescription,
-QLabel#auroraHelpText,
-QLabel#auroraSectionDescription,
-QLabel#auroraSequenceMeta,
-QLabel#auroraFieldHint {
-    color: #52606d;
-}
-
-QLabel#auroraStepIndex {
-    background: #edf3f8;
-    border: 0;
-    border-radius: 9px;
-    color: #49657f;
-    font-size: 11px;
-    font-weight: 700;
-    padding: 2px 8px;
-}
-
-QPushButton#auroraStepAction,
-QPushButton#auroraAddStepButton {
-    padding: 5px 10px;
-}
-
-QScrollArea#auroraStepsScroll {
-    background: transparent;
-    border: 0;
-}
-
-QScrollArea#auroraStepsScroll QWidget {
-    background: transparent;
-}
-
-QCheckBox {
-    spacing: 6px;
-}
-
-QToolBar#graphToolbar {
-    background: transparent;
-    border: 0;
-    spacing: 4px;
-}
-
-QScrollArea#panelScrollArea {
-    background: #f4f6f8;
-    border: 0;
-}
-
-QLabel#connectionIndicator {
-    font-weight: 600;
-    padding: 2px 8px;
-}
-
-QListWidget,
-QComboBox,
-QLineEdit {
-    background: #ffffff;
-    border: 1px solid #c7d0da;
-    border-radius: 7px;
-    padding: 6px 8px;
-    selection-background-color: #2f6f9f;
-}
-
-QStatusBar {
-    background: #ffffff;
-    border-top: 1px solid #d8dee6;
-}
-"""
-
-AURORA_DEVICE_OPTIONS = (
-    ("EmStat4 HR", "emstat4_hr"),
-    ("EmStat4 LR", "emstat4_lr"),
-    ("Nexus", "nexus"),
-)
-
-AURORA_ADDITIONAL_MEASUREMENT_OPTIONS = (
-    ("ab", "ab Potential"),
-    ("ac", "ac CE potential"),
-    ("ae", "ae RE potential"),
-    ("ag", "ag WE vs CE"),
-    ("as", "as Analog input 0"),
-    ("ah", "ah S2 vs RE"),
-    ("ai", "ai SE vs S2"),
-    ("ba", "ba Current"),
-    ("bb", "bb Bipot current"),
-    ("ed", "ed Temperature"),
-    ("ef", "ef Board temperature"),
-)
-
-AURORA_DEVICE_MEASUREMENT_TYPES = {
-    "emstat4_hr": {"ab", "ac", "ae", "ag", "as", "ba"},
-    "emstat4_lr": {"ab", "ac", "ae", "ag", "as", "ba"},
-    "nexus": {"ab", "ac", "ag", "as", "ah", "ai", "ba", "bb", "ed", "ef"},
-}
 
 
 class connection_indicator(QLabel):
@@ -351,17 +170,14 @@ class method_configuration_dialog(QDialog):
         super().__init__(parent)
         self.setObjectName("methodConfigDialog")
         self.setWindowTitle(f"Run Measurement - {title}")
-        self.resize(1020, 860)
+        self.resize(760, 620)
         self.dialog_title = title
         self.method = None
         self.method_label = ""
         self.instrument = instrument
+        self.imported_package = None
+        self.imported_package_path: Path | None = None
         self.field_widgets: dict[str, QLineEdit] = {}
-        self.script_drafts = {
-            "aurora_json": self.default_aurora_json(),
-            "aurora_python": self.default_aurora_python(),
-        }
-        self._active_script_mode = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -374,9 +190,7 @@ class method_configuration_dialog(QDialog):
 
         self.run_mode_combo = QComboBox(self)
         self.run_mode_combo.addItem("PalmSens method", "native")
-        self.run_mode_combo.addItem("Aurora Visual Builder", "aurora_visual")
-        self.run_mode_combo.addItem("Aurora Unicycler JSON", "aurora_json")
-        self.run_mode_combo.addItem("Aurora Unicycler Python", "aurora_python")
+        self.run_mode_combo.addItem("Imported Aurora package", "aurora_package")
         self.run_mode_combo.addItem("MethodScript", "methodscript")
         self.form_layout.addRow("Run type", self.run_mode_combo)
 
@@ -390,89 +204,25 @@ class method_configuration_dialog(QDialog):
         self.field_form = QFormLayout()
         layout.addLayout(self.field_form)
 
-        self.aurora_options = QWidget(self)
-        self.aurora_options_layout = QHBoxLayout(self.aurora_options)
-        self.aurora_options_layout.setContentsMargins(0, 0, 0, 0)
-        self.aurora_options_layout.setSpacing(12)
+        self.package_widget = QFrame(self)
+        self.package_widget.setObjectName("auroraOptionsCard")
+        self.package_widget.setFrameShape(QFrame.Shape.StyledPanel)
+        package_layout = QVBoxLayout(self.package_widget)
+        package_layout.setContentsMargins(14, 14, 14, 14)
+        package_layout.setSpacing(10)
 
-        device_card, device_card_layout = self.build_aurora_card("Device & Data")
-        self.aurora_options_layout.addWidget(device_card, 3)
+        package_title = QLabel("Imported Aurora Package", self.package_widget)
+        package_title.setObjectName("auroraCardTitle")
+        package_layout.addWidget(package_title)
 
-        device_form = QFormLayout()
-        device_form.setContentsMargins(0, 0, 0, 0)
-        device_form.setHorizontalSpacing(12)
-        device_form.setVerticalSpacing(8)
+        self.package_info_label = QLabel("No Aurora package loaded.", self.package_widget)
+        self.package_info_label.setWordWrap(True)
+        package_layout.addWidget(self.package_info_label)
 
-        self.aurora_device_combo = QComboBox(self)
-        for label, value in AURORA_DEVICE_OPTIONS:
-            self.aurora_device_combo.addItem(label, value)
-        device_form.addRow("PalmSens target", self.aurora_device_combo)
-        device_card_layout.addLayout(device_form)
-
-        extra_measurements_label = QLabel("Extra measurements", self)
-        extra_measurements_label.setObjectName("auroraCardTitle")
-        device_card_layout.addWidget(extra_measurements_label)
-
-        self.additional_measurement_checks: dict[str, QCheckBox] = {}
-        self.additional_measurement_widget = QWidget(self)
-        self.additional_measurement_layout = QGridLayout(self.additional_measurement_widget)
-        self.additional_measurement_layout.setContentsMargins(0, 0, 0, 0)
-        self.additional_measurement_layout.setHorizontalSpacing(16)
-        self.additional_measurement_layout.setVerticalSpacing(6)
-        for index, (var_type, label) in enumerate(AURORA_ADDITIONAL_MEASUREMENT_OPTIONS):
-            checkbox = QCheckBox(label, self.additional_measurement_widget)
-            checkbox.setChecked(False)
-            checkbox.setToolTip(f"Measure MethodSCRIPT variable type {var_type} with add_meas.")
-            self.additional_measurement_checks[var_type] = checkbox
-            self.additional_measurement_layout.addWidget(checkbox, index // 2, index % 2)
-        device_card_layout.addWidget(self.additional_measurement_widget)
-
-        run_card, run_card_layout = self.build_aurora_card("Run Settings")
-        self.aurora_options_layout.addWidget(run_card, 2)
-
-        run_settings_columns = QHBoxLayout()
-        run_settings_columns.setContentsMargins(0, 0, 0, 0)
-        run_settings_columns.setSpacing(12)
-        run_card_layout.addLayout(run_settings_columns)
-
-        run_settings_left = QFormLayout()
-        run_settings_left.setContentsMargins(0, 0, 0, 0)
-        run_settings_left.setHorizontalSpacing(12)
-        run_settings_left.setVerticalSpacing(8)
-        run_settings_right = QFormLayout()
-        run_settings_right.setContentsMargins(0, 0, 0, 0)
-        run_settings_right.setHorizontalSpacing(12)
-        run_settings_right.setVerticalSpacing(8)
-        run_settings_columns.addLayout(run_settings_left, 1)
-        run_settings_columns.addLayout(run_settings_right, 1)
-
-        self.sample_name_edit = QLineEdit(title, self)
-        run_settings_left.addRow("Sample name", self.sample_name_edit)
-
-        self.capacity_edit = QLineEdit("", self)
-        run_settings_left.addRow("Capacity (mAh)", self.capacity_edit)
-
-        channel_default = "0"
-        if instrument is not None and getattr(instrument, "channel", -1) > 0:
-            channel_default = str(instrument.channel - 1)
-        self.channel_edit = QLineEdit(channel_default, self)
-        run_settings_left.addRow("PGStat channel", self.channel_edit)
-
-        self.scan_step_edit = QLineEdit("", self)
-        run_settings_right.addRow("Scan step voltage (V)", self.scan_step_edit)
-
-        self.eis_dc_potential_edit = QLineEdit("0.0", self)
-        run_settings_right.addRow("EIS DC potential (V)", self.eis_dc_potential_edit)
-
-        self.eis_dc_current_edit = QLineEdit("0.0", self)
-        run_settings_right.addRow("EIS DC current (mA)", self.eis_dc_current_edit)
-
-        self.aurora_options_host = QWidget(self)
-        self.aurora_options_host_layout = QVBoxLayout(self.aurora_options_host)
-        self.aurora_options_host_layout.setContentsMargins(0, 0, 0, 0)
-        self.aurora_options_host_layout.setSpacing(0)
-        self.aurora_options_host_layout.addWidget(self.aurora_options)
-        layout.addWidget(self.aurora_options_host)
+        self.load_package_button = QPushButton("Load Aurora Package", self.package_widget)
+        self.load_package_button.clicked.connect(self.load_aurora_package_file)
+        package_layout.addWidget(self.load_package_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.package_widget)
 
         self.script_help = QLabel(self)
         self.script_help.setObjectName("auroraHelpText")
@@ -493,10 +243,6 @@ class method_configuration_dialog(QDialog):
         self.script_editor.setMinimumHeight(320)
         layout.addWidget(self.script_editor, 1)
 
-        self.visual_builder = AuroraVisualBuilder(self)
-        layout.addWidget(self.visual_builder, 1)
-        self.visual_builder.set_context_widget(None)
-
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
@@ -504,17 +250,13 @@ class method_configuration_dialog(QDialog):
         self.run_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
         if self.run_button is not None:
             self.run_button.setText("Run")
-        self.save_script_button = button_box.addButton("Save MethodSCRIPT", QDialogButtonBox.ButtonRole.ActionRole)
-        self.save_script_button.clicked.connect(self.save_methodscript)
         button_box.accepted.connect(self.validate_and_accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
         self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
-        self.aurora_device_combo.currentIndexChanged.connect(self.update_additional_measurements)
         self.rebuild_fields()
-        self.update_additional_measurements()
         self.rebuild_mode()
 
     def selected_method_key(self) -> str:
@@ -529,22 +271,6 @@ class method_configuration_dialog(QDialog):
             for field_key, widget in self.field_widgets.items()
         }
 
-    def selected_additional_measurements(self) -> tuple[str, ...]:
-        return tuple(
-            var_type
-            for var_type, checkbox in self.additional_measurement_checks.items()
-            if checkbox.isEnabled() and checkbox.isChecked()
-        )
-
-    def update_additional_measurements(self):
-        device_key = self.aurora_device_combo.currentData()
-        supported = AURORA_DEVICE_MEASUREMENT_TYPES.get(device_key, set())
-        for var_type, checkbox in self.additional_measurement_checks.items():
-            is_supported = var_type in supported
-            checkbox.setEnabled(is_supported)
-            if not is_supported:
-                checkbox.setChecked(False)
-
     def rebuild_fields(self):
         while self.field_form.rowCount():
             self.field_form.removeRow(0)
@@ -556,39 +282,11 @@ class method_configuration_dialog(QDialog):
             self.field_widgets[field.key] = widget
             self.field_form.addRow(field.label, widget)
 
-    def build_aurora_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
-        card = QFrame(self)
-        card.setObjectName("auroraOptionsCard")
-        card.setFrameShape(QFrame.Shape.StyledPanel)
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
-
-        title_label = QLabel(title, card)
-        title_label.setObjectName("auroraCardTitle")
-        layout.addWidget(title_label)
-
-        return card, layout
-
-    def set_aurora_options_parent(self, in_visual_builder: bool):
-        if in_visual_builder:
-            self.visual_builder.set_context_widget(self.aurora_options)
-            return
-
-        self.visual_builder.set_context_widget(None)
-        self.aurora_options_host_layout.addWidget(self.aurora_options)
-
     def rebuild_mode(self):
-        previous_mode = self._active_script_mode
-        if previous_mode in self.script_drafts:
-            self.script_drafts[previous_mode] = self.script_editor.toPlainText()
-
         run_mode = self.selected_run_mode()
         native_mode = run_mode == "native"
-        visual_mode = run_mode == "aurora_visual"
+        package_mode = run_mode == "aurora_package"
         methodscript_mode = run_mode == "methodscript"
-        aurora_mode = run_mode in {"aurora_visual", "aurora_json", "aurora_python"}
 
         self.method_combo_label.setVisible(native_mode)
         self.method_combo.setVisible(native_mode)
@@ -602,41 +300,22 @@ class method_configuration_dialog(QDialog):
             if field_item is not None and field_item.widget() is not None:
                 field_item.widget().setVisible(native_mode)
 
-        self.aurora_options.setVisible(aurora_mode)
-        self.set_aurora_options_parent(visual_mode)
-        self.aurora_options_host.setVisible(aurora_mode and not visual_mode)
-        self.script_help.setVisible(run_mode in {"aurora_json", "aurora_python", "methodscript"})
+        self.package_widget.setVisible(package_mode)
+        self.script_help.setVisible(package_mode or methodscript_mode)
         self.script_actions.setVisible(methodscript_mode)
-        self.script_editor.setVisible(run_mode in {"aurora_json", "aurora_python", "methodscript"})
-        self.visual_builder.setVisible(visual_mode)
+        self.script_editor.setVisible(methodscript_mode)
 
-        if run_mode in self.script_drafts:
-            self.script_editor.setPlainText(self.script_drafts[run_mode])
-            self._active_script_mode = run_mode
-        else:
-            self._active_script_mode = None
-
-        if run_mode == "aurora_visual":
+        if package_mode:
             self.script_help.setText(
-                "Build an Aurora Unicycler protocol visually, including tags and loops. "
-                "The app validates the protocol and converts it to PalmSens MethodSCRIPT."
-            )
-        elif run_mode == "aurora_json":
-            self.script_help.setText(
-                "Paste an Aurora Unicycler protocol JSON object. The app will validate it, "
-                "convert it to PalmSens MethodSCRIPT, then run it with PyPalmSens."
-            )
-        elif run_mode == "aurora_python":
-            self.script_help.setText(
-                "Paste a Python script that defines `protocol = CyclingProtocol(...)` or a "
-                "`build_protocol()` function returning one. The script runs locally inside the app."
+                "Load a `.psmethod` file exported from the standalone Aurora Method Builder. "
+                "The package will be rendered for the current channel panel when you run it."
             )
         elif run_mode == "methodscript":
             self.script_help.setText(
                 "Paste MethodSCRIPT directly or load an existing .mscr file, then run it with PyPalmSens."
             )
-
-        self.save_script_button.setVisible(run_mode in {"aurora_visual", "aurora_json", "aurora_python"})
+        else:
+            self.script_help.clear()
 
     def validate_and_accept(self):
         try:
@@ -650,117 +329,70 @@ class method_configuration_dialog(QDialog):
             QMessageBox.warning(self, "Invalid parameters", str(exc))
             return
         except RuntimeError as exc:
-            QMessageBox.warning(self, "Aurora setup error", str(exc))
+            QMessageBox.warning(self, "Setup error", str(exc))
             return
         except Exception as exc:
-            QMessageBox.warning(self, "Aurora conversion error", str(exc))
+            QMessageBox.warning(self, "Method error", str(exc))
             return
 
         self.accept()
                 
     def build_script_method(self, run_mode: str):
-        methodscript = self.generate_methodscript(run_mode)
         if run_mode == "methodscript":
+            script_text = self.script_editor.toPlainText()
+            if not script_text.strip():
+                raise ValueError("script content is required.")
             self.method_label = "MethodSCRIPT"
-        else:
-            if not hasattr(ps, "MethodScript"):
-                raise RuntimeError(
-                    "This PyPalmSens installation does not expose `MethodScript`. "
-                    "Update PyPalmSens before running Aurora-generated scripts."
-                )
+            return ps.MethodScript(script=script_text)
 
-            self.method_label = f"Aurora Unicycler ({self.aurora_device_combo.currentText()})"
+        if run_mode != "aurora_package":
+            raise ValueError("Unsupported script mode.")
+
+        if self.imported_package is None:
+            raise ValueError("Load an Aurora package before running it.")
+
+        if not hasattr(ps, "MethodScript"):
+            raise RuntimeError(
+                "This PyPalmSens installation does not expose `MethodScript`. "
+                "Update PyPalmSens before running imported Aurora packages."
+            )
+
+        channel_override = None
+        if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0:
+            channel_override = self.instrument.channel - 1
+
+        methodscript = render_aurora_package_for_channel(
+            self.imported_package,
+            channel_override=channel_override,
+        )
+        self.method_label = self.imported_package.name
         return ps.MethodScript(script=methodscript)
 
-    def generate_methodscript(self, run_mode: str) -> str:
-        if run_mode == "methodscript":
-            script_text = self.script_editor.toPlainText()
-            if not script_text.strip():
-                raise ValueError("script content is required.")
-            return script_text
-
-        if run_mode not in {"aurora_visual", "aurora_json", "aurora_python"}:
-            raise ValueError("MethodSCRIPT export is only available for Aurora modes.")
-
-        if run_mode == "aurora_visual":
-            protocol = self.visual_builder.build_protocol()
-        else:
-            script_text = self.script_editor.toPlainText()
-            if not script_text.strip():
-                raise ValueError("script content is required.")
-            protocol = self.build_aurora_protocol(aurora_unicycler, PalmSensDevice, run_mode, script_text)
-
-        capacity_mAh = self.parse_optional_float(self.capacity_edit, "Capacity (mAh)")
-        channel = self.parse_int(self.channel_edit, "PGStat channel")
-        scan_step_voltage_v = self.parse_optional_float(self.scan_step_edit, "Scan step voltage (V)")
-        eis_dc_potential_v = self.parse_float(self.eis_dc_potential_edit, "EIS DC potential (V)")
-        eis_dc_current_ma = self.parse_float(self.eis_dc_current_edit, "EIS DC current (mA)")
-
-        sample_name = self.sample_name_edit.text().strip() or None
-        device_key = self.aurora_device_combo.currentData()
-        return protocol.to_palmsens_methodscript(
-            sample_name=sample_name,
-            capacity_mAh=capacity_mAh,
-            device=PalmSensDevice(device_key),
-            channel=channel,
-            scan_step_voltage_V=scan_step_voltage_v,
-            eis_dc_potential_V=eis_dc_potential_v,
-            eis_dc_current_mA=eis_dc_current_ma,
-            additional_measurements=self.selected_additional_measurements(),
-        )
-
-    def save_methodscript(self):
-        run_mode = self.selected_run_mode()
-        if run_mode not in {"aurora_visual", "aurora_json", "aurora_python"}:
-            QMessageBox.information(
-                self,
-                "Save unavailable",
-                "MethodSCRIPT saving is currently only available for the Aurora modes.",
-            )
+    def load_aurora_package_file(self):
+        if self.selected_run_mode() != "aurora_package":
             return
 
-        try:
-            methodscript = self.generate_methodscript(run_mode)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Invalid parameters", str(exc))
-            return
-        except RuntimeError as exc:
-            QMessageBox.warning(self, "Aurora setup error", str(exc))
-            return
-        except Exception as exc:
-            QMessageBox.warning(self, "Aurora conversion error", str(exc))
-            return
-
-        sample_name = self.sample_name_edit.text().strip()
-        default_name = sample_name or self.dialog_title.replace(" ", "_")
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Save MethodSCRIPT",
-            f"{default_name}.mscr",
-            "MethodSCRIPT Files (*.mscr);;Text Files (*.txt);;All Files (*)",
+            "Load Aurora Package",
+            "",
+            "Aurora Method Packages (*.psmethod);;JSON Files (*.json);;All Files (*)",
         )
         if not file_path:
             return
 
-        path = Path(file_path)
-        if path.suffix == "":
-            path = path.with_suffix(".mscr")
-
         try:
-            path.write_text(methodscript, encoding="utf-8")
-        except OSError as exc:
+            self.imported_package = load_aurora_package(file_path)
+        except Exception as exc:
             QMessageBox.warning(
                 self,
-                "Save failed",
-                f"Could not save MethodSCRIPT:\n{exc}",
+                "Load failed",
+                f"Could not load Aurora package:\n{exc}",
             )
             return
 
-        QMessageBox.information(
-            self,
-            "MethodSCRIPT saved",
-            f"Saved MethodSCRIPT to:\n{path}",
-        )
+        self.imported_package_path = Path(file_path)
+        self.package_info_label.setText(self.package_summary_text())
 
     def load_methodscript(self):
         if self.selected_run_mode() != "methodscript":
@@ -788,52 +420,23 @@ class method_configuration_dialog(QDialog):
 
         self.script_editor.setPlainText(script_text)
 
-    @staticmethod
-    def build_aurora_protocol(aurora_unicycler, palm_sens_device_enum, run_mode: str, script_text: str):
-        # Path 1: JSON
-        if run_mode == "aurora_json":
-            try:
-                protocol_data = json.loads(script_text)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid Aurora JSON: {exc.msg}") from exc
-            return aurora_unicycler.CyclingProtocol.from_dict(protocol_data)
+    def package_summary_text(self) -> str:
+        if self.imported_package is None:
+            return "No Aurora package loaded."
 
-        # Path 2: Python
-        execution_scope = {
-            "__builtins__": __builtins__,
-            "CyclingProtocol": aurora_unicycler.CyclingProtocol,
-            "ConstantCurrent": aurora_unicycler.ConstantCurrent,
-            "ConstantVoltage": aurora_unicycler.ConstantVoltage,
-            "ImpedanceSpectroscopy": aurora_unicycler.ImpedanceSpectroscopy,
-            "Loop": aurora_unicycler.Loop,
-            "OpenCircuitVoltage": aurora_unicycler.OpenCircuitVoltage,
-            "PalmSensDevice": palm_sens_device_enum,
-            "RecordParams": aurora_unicycler.RecordParams,
-            "SafetyParams": aurora_unicycler.SafetyParams,
-            "SampleParams": aurora_unicycler.SampleParams,
-            "Tag": aurora_unicycler.Tag,
-            "VoltageScan": aurora_unicycler.VoltageScan,
-        }
-        exec(script_text, execution_scope, execution_scope)
+        source_name = self.imported_package_path.name if self.imported_package_path is not None else "Unknown"
+        run_channel = (
+            self.instrument.channel - 1
+            if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0
+            else self.imported_package.settings.channel
+        )
+        return (
+            f"Package: {self.imported_package.name}\n"
+            f"Source file: {source_name}\n"
+            f"Saved channel: {self.imported_package.settings.channel}\n"
+            f"Run channel for this panel: {run_channel}"
+        )
 
-        protocol = execution_scope.get("protocol")
-        if protocol is None:
-            build_protocol = execution_scope.get("build_protocol")
-            if callable(build_protocol):
-                protocol = build_protocol()
-
-        if protocol is None:
-            raise ValueError(
-                "Aurora Python scripts must define `protocol = CyclingProtocol(...)` "
-                "or `build_protocol()`."
-            )
-
-        if not isinstance(protocol, aurora_unicycler.CyclingProtocol):
-            raise ValueError("Aurora Python script did not produce a CyclingProtocol.")
-
-        return protocol
-
-    # Start of parsing helpers
     @staticmethod
     def parse_float(widget: QLineEdit, label: str) -> float:
         raw_value = widget.text().strip()
@@ -863,39 +466,6 @@ class method_configuration_dialog(QDialog):
             return int(raw_value)
         except ValueError as exc:
             raise ValueError(f"Invalid value for {label}: {raw_value}") from exc
-    # End of parsing helpers
-
-    @staticmethod
-    def default_aurora_json() -> str:
-        return json.dumps(
-            {
-                "record": {"time_s": 10, "voltage_V": 0.01},
-                "safety": {"max_voltage_V": 4.3, "min_voltage_V": 2.5},
-                "method": [
-                    {"step": "tag", "tag": "cycle"},
-                    {"step": "constant_current", "rate_C": 0.5, "until_voltage_V": 4.2},
-                    {"step": "constant_voltage", "voltage_V": 4.2, "until_rate_C": 0.05},
-                    {"step": "constant_current", "rate_C": -0.5, "until_voltage_V": 3.0},
-                    {"step": "loop", "loop_to": "cycle", "cycle_count": 10},
-                ],
-            },
-            indent=2,
-        )
-
-    @staticmethod
-    def default_aurora_python() -> str:
-        return """protocol = CyclingProtocol(
-    record=RecordParams(time_s=10, voltage_V=0.01),
-    safety=SafetyParams(max_voltage_V=4.3, min_voltage_V=2.5),
-    method=[
-        Tag(tag="cycle"),
-        ConstantCurrent(rate_C=0.5, until_voltage_V=4.2, until_time_s=3 * 60 * 60),
-        ConstantVoltage(voltage_V=4.2, until_rate_C=0.05, until_time_s=60 * 60),
-        ConstantCurrent(rate_C=-0.5, until_voltage_V=3.0, until_time_s=3 * 60 * 60),
-        Loop(loop_to="cycle", cycle_count=10),
-    ],
-)
-"""
 
 
 class list_choices(QWidget):
@@ -989,6 +559,11 @@ class main_window(QMainWindow):
         self.disconnect_action.triggered.connect(self.request_disconnect)
         toolbar.addAction(self.disconnect_action)
 
+        self.aurora_builder_action = QAction("Aurora Builder", self)
+        self.aurora_builder_action.setStatusTip("Open the standalone Aurora method builder")
+        self.aurora_builder_action.triggered.connect(self.open_aurora_builder)
+        toolbar.addAction(self.aurora_builder_action)
+
         self.session_menu = QMenu("Session", self)
         self.open_action = QAction("Load session", self)
         self.open_action.triggered.connect(self.open_session)
@@ -1077,6 +652,16 @@ class main_window(QMainWindow):
 
     def update_connection(self, is_connected: bool):
         self.disconnect_action.setEnabled(is_connected)
+
+    def open_aurora_builder(self):
+        builder_path = Path(__file__).with_name("aurora_method_builder_app.py")
+        started = QProcess.startDetached(sys.executable, [str(builder_path)])
+        if not started:
+            QMessageBox.warning(
+                self,
+                "Launch failed",
+                f"Could not start the Aurora builder:\n{builder_path}",
+            )
 
     def on_connect(self, dev):
         self.connection_indicator.set_status(True, dev)

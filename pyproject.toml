@@ -18,4 +18,4 @@ dependencies = [
 aurora-unicycler = { path = "./aurora-unicycler", editable = true }
 
 [tool.setuptools]
-py-modules = ["main", "ps_helpers", "bdf_export", "method_config", "method_worker"]
+py-modules = ["main", "ps_helpers", "bdf_export", "method_config", "method_worker", "aurora_builder", "aurora_methods", "aurora_method_builder_app", "app_style"]
