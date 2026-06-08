@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QComboBox,
+    QCheckBox,
     QDialogButtonBox,
     QMessageBox,
     QFrame,
@@ -19,93 +20,119 @@ import ps_helpers as pslib
 import re
 
 
-_GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$")
-_GROUP_COLORS = (
-    "#2f6f9f",
-    "#c15a2c",
-    "#2e8b57",
-    "#7a4fa3",
-    "#b33c5a",
-    "#4f6d7a",
-)
+_GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+)_(?P<group>\d+)$")
 
 
-def _split_dataset_key(key):
-    match = _GROUPED_KEY_PATTERN.match(key)
-    if match:
-        return match.group("base"), match.group("group")
-    return key, None
+def _dataset_entries(dataset):
+    if hasattr(dataset, "items"):
+        try:
+            return [(str(key), data_array) for key, data_array in dataset.items()]
+        except TypeError:
+            pass
 
-
-def _measurement_groups(dataset):
-    groups: dict[str, dict] = {}
-
-    for key, data_array in dataset.items():
-        base_key, group_id = _split_dataset_key(key)
-        normalized_group_id = group_id or "default"
-        group = groups.setdefault(
-            normalized_group_id,
-            {
-                "id": normalized_group_id,
-                "label": (
-                    f"Measurement {group_id}"
-                    if group_id is not None
-                    else "Measurement"
-                ),
-                "arrays": [],
-                "by_base_key": {},
-            },
-        )
-        entry = {
-            "key": key,
-            "base_key": base_key,
-            "array": data_array,
-        }
-        group["arrays"].append(entry)
-        group["by_base_key"][base_key] = entry
-
-    ordered_groups = sorted(
-        groups.values(),
-        key=lambda group: (
-            group["id"] == "default",
-            int(group["id"]) if group["id"].isdigit() else float("inf"),
-            group["id"],
-        ),
-    )
-    return ordered_groups
-
-
-def _default_axis_keys(group):
-    arrays = group["arrays"]
-    if not arrays:
-        return None, None
-
-    x_key = arrays[0]["base_key"]
-    y_key = arrays[min(1, len(arrays) - 1)]["base_key"]
-    return x_key, y_key
-
-
-def _axis_entries_for_group(group):
     return [
-        {
-            "axis_key": entry["base_key"],
-            "label": axis_selection_dialog.format_array_label(entry["array"], entry["base_key"]),
-        }
-        for entry in group["arrays"]
+        (getattr(data_array, "name", f"array_{index}"), data_array)
+        for index, data_array in enumerate(dataset.arrays())
     ]
 
 
-def _axis_entries_for_all_groups(groups):
-    entries_by_key: dict[str, dict] = {}
-    for group in groups:
-        for entry in group["arrays"]:
-            axis_key = entry["base_key"]
-            if axis_key not in entries_by_key:
-                entries_by_key[axis_key] = {
-                    "axis_key": axis_key,
-                    "label": axis_selection_dialog.format_array_label(entry["array"], axis_key),
-                }
-    return list(entries_by_key.values())
+def _split_grouped_name(value):
+    match = _GROUPED_KEY_PATTERN.match(str(value))
+    if match:
+        return match.group("base"), match.group("group")
+    return str(value), None
+
+
+def _normalize_text(value):
+    if value is None:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
+
+
+def _is_time_array(entry):
+    data_array = entry["array"]
+    texts = (
+        _normalize_text(entry["base_key"]),
+        _normalize_text(getattr(data_array, "name", "")),
+        _normalize_text(getattr(data_array, "type", "")),
+    )
+    unit = _normalize_text(getattr(data_array, "unit", ""))
+    return any(text.startswith("time") or "elapsedtime" in text for text in texts) or unit in {
+        "s",
+        "sec",
+        "second",
+        "seconds",
+        "ms",
+    }
+
+
+def _is_voltage_array(entry):
+    data_array = entry["array"]
+    texts = (
+        _normalize_text(entry["base_key"]),
+        _normalize_text(getattr(data_array, "name", "")),
+        _normalize_text(getattr(data_array, "type", "")),
+    )
+    unit = _normalize_text(getattr(data_array, "unit", ""))
+    return any("potential" in text or "voltage" in text for text in texts) or unit in {
+        "v",
+        "mv",
+    }
+
+
+def _voltage_preference(entry):
+    data_array = entry["array"]
+    text = _normalize_text(f"{entry['base_key']} {getattr(data_array, 'name', '')}")
+    if "wevsce" in text:
+        return 2
+    if "appliedpotential" in text or text.startswith("potential") or text.startswith("voltage"):
+        return 0
+    return 1
+
+
+def _measurement_segments(dataset):
+    groups = {}
+
+    for key, data_array in _dataset_entries(dataset):
+        base_key, group_id = _split_grouped_name(key)
+        if group_id is None:
+            base_key, group_id = _split_grouped_name(getattr(data_array, "name", key))
+        if group_id is None:
+            continue
+
+        group = groups.setdefault(group_id, {"id": group_id, "arrays": []})
+        group["arrays"].append(
+            {
+                "key": key,
+                "base_key": base_key,
+                "array": data_array,
+            }
+        )
+
+    segments = []
+    for group in groups.values():
+        time_entry = next((entry for entry in group["arrays"] if _is_time_array(entry)), None)
+        voltage_entries = [entry for entry in group["arrays"] if _is_voltage_array(entry)]
+        if time_entry is None or not voltage_entries:
+            continue
+
+        voltage_entry = sorted(voltage_entries, key=_voltage_preference)[0]
+        segments.append(
+            {
+                "id": group["id"],
+                "label": f"Measurement {group['id']}",
+                "time_array": time_entry["array"],
+                "voltage_array": voltage_entry["array"],
+            }
+        )
+
+    return sorted(
+        segments,
+        key=lambda segment: (
+            int(segment["id"]) if str(segment["id"]).isdigit() else float("inf"),
+            str(segment["id"]),
+        ),
+    )
 
 
 class graph_widget(QWidget):
@@ -115,10 +142,9 @@ class graph_widget(QWidget):
         self.measurement = None
         self.x_index = None
         self.y_index = None
-        self.selected_group_id = None
-        self.selected_x_key = None
-        self.selected_y_key = None
-        self.legend = None
+        self.live_curve = None
+        self.combine_measurements = True
+        self.selected_measurement_ids = ()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -131,140 +157,149 @@ class graph_widget(QWidget):
         self.plot_widget.getAxis("left").setTextPen("#56616f")
         layout.addWidget(self.plot_widget)
 
-    def plot_measurement(self, measurement, x_key=None, y_key=None, group_id=None):
+    def plot_measurement(
+        self,
+        measurement,
+        x_index=0,
+        y_index=1,
+        combine_measurements=None,
+        measurement_ids=None,
+    ):
         self.measurement = measurement
+        self.x_index = x_index
+        self.y_index = y_index
+
         dataset = self.measurement.dataset
-        groups = _measurement_groups(dataset)
-        if not groups:
+        arrays = list(dataset.arrays())
+        if not arrays:
             return
+        if self.x_index >= len(arrays):
+            self.x_index = 0
+        if self.y_index >= len(arrays):
+            self.y_index = min(1, len(arrays) - 1)
 
-        selected_group_id = group_id
-        if selected_group_id is None:
-            selected_group_id = "all" if len(groups) > 1 else groups[0]["id"]
+        segments = _measurement_segments(dataset)
+        if combine_measurements is None:
+            combine_measurements = bool(segments)
 
-        current_group = next(
-            (group for group in groups if group["id"] == selected_group_id),
-            None,
-        )
-        if current_group is None:
-            current_group = groups[0]
-            selected_group_id = current_group["id"]
+        if combine_measurements and segments:
+            selected_ids = tuple(measurement_ids or [segment["id"] for segment in segments])
+            selected_segments = [
+                segment
+                for segment in segments
+                if segment["id"] in selected_ids
+            ]
+            if selected_segments:
+                self.combine_measurements = True
+                self.selected_measurement_ids = selected_ids
+                self._plot_combined_measurements(selected_segments)
+                return
 
-        default_x_key, default_y_key = _default_axis_keys(current_group)
-        x_key = x_key or default_x_key
-        y_key = y_key or default_y_key
-        self.selected_group_id = selected_group_id
-        self.selected_x_key = x_key
-        self.selected_y_key = y_key
-
-        axis_entries = (
-            _axis_entries_for_all_groups(groups)
-            if selected_group_id == "all"
-            else _axis_entries_for_group(current_group)
-        )
-        axis_keys = [entry["axis_key"] for entry in axis_entries]
-        if x_key not in axis_keys:
-            x_key = axis_keys[0]
-            self.selected_x_key = x_key
-        if y_key not in axis_keys:
-            y_key = axis_keys[min(1, len(axis_keys) - 1)]
-            self.selected_y_key = y_key
-
-        if selected_group_id == "all":
-            self._plot_grouped_measurements(groups, x_key, y_key)
-            return
-
-        x_entry = current_group["by_base_key"].get(x_key)
-        y_entry = current_group["by_base_key"].get(y_key)
-        if x_entry is None or y_entry is None:
-            return
-
-        self._plot_arrays(
-            [(x_entry["array"], y_entry["array"], current_group["label"], _GROUP_COLORS[0])],
-        )
+        self.combine_measurements = False
+        self.selected_measurement_ids = ()
+        x_array = arrays[self.x_index]
+        y_array = arrays[self.y_index]
+        self._plot_arrays(x_array, y_array)
 
     def plot_live_data(self, callback_data):
         self.measurement = None
         self.x_index = 0
         self.y_index = 1
-        self.selected_group_id = None
-        self.selected_x_key = None
-        self.selected_y_key = None
-        self._plot_arrays(
-            [(callback_data.x_array, callback_data.y_array, None, _GROUP_COLORS[0])],
-        )
+        self.combine_measurements = False
+        self.selected_measurement_ids = ()
+        self._plot_arrays(callback_data.x_array, callback_data.y_array)
 
-    def _plot_grouped_measurements(self, groups, x_key, y_key):
-        curves = []
-        for index, group in enumerate(groups):
-            x_entry = group["by_base_key"].get(x_key)
-            y_entry = group["by_base_key"].get(y_key)
-            if x_entry is None or y_entry is None:
-                continue
-            curves.append(
-                (
-                    x_entry["array"],
-                    y_entry["array"],
-                    group["label"],
-                    _GROUP_COLORS[index % len(_GROUP_COLORS)],
-                )
-            )
+    def _plot_combined_measurements(self, segments):
+        x_values = []
+        y_values = []
 
-        if curves:
-            self._plot_arrays(curves)
+        for segment in segments:
+            time_values = segment["time_array"].to_numpy()
+            voltage_values = segment["voltage_array"].to_numpy()
+            count = min(len(time_values), len(voltage_values))
+            x_values.extend(time_values[:count])
+            y_values.extend(voltage_values[:count])
 
-    def _reset_plot(self):
-        self.plot_widget.clear()
-        if self.legend is not None:
-            self.plot_widget.removeItem(self.legend)
-            self.legend = None
-
-    def _plot_arrays(self, curves):
-        if not curves:
-            self._reset_plot()
+        if not x_values or not y_values:
+            self.plot_widget.clear()
+            self.live_curve = None
             return
 
-        self._reset_plot()
-        if any(label for _, _, label, _ in curves):
-            self.legend = self.plot_widget.addLegend(offset=(10, 10))
+        first_time = segments[0]["time_array"]
+        first_voltage = segments[0]["voltage_array"]
+        self.plot_widget.setLabel("bottom", f"{first_time.name}, {first_time.unit}")
+        self.plot_widget.setLabel("left", f"{first_voltage.name}, {first_voltage.unit}")
+        pen = pg.mkPen(color="#2f6f9f", width=2)
 
-        first_x_array, first_y_array, _, _ = curves[0]
-        self.plot_widget.setLabel("bottom", f"{first_x_array.name}, {first_x_array.unit}")
-        self.plot_widget.setLabel("left", f"{first_y_array.name}, {first_y_array.unit}")
+        self.plot_widget.clear()
+        self.live_curve = self.plot_widget.plot(x_values, y_values, pen=pen)
 
-        for x_array, y_array, label, color in curves:
-            x_values = x_array.to_numpy()
-            y_values = y_array.to_numpy()
-            pen = pg.mkPen(color=color, width=2)
-            self.plot_widget.plot(x_values, y_values, pen=pen, name=label)
+    def _plot_arrays(self, x_array, y_array):
+        x_values = x_array.to_numpy()
+        y_values = y_array.to_numpy()
+
+        self.plot_widget.setLabel("bottom", f"{x_array.name}, {x_array.unit}")
+        self.plot_widget.setLabel("left", f"{y_array.name}, {y_array.unit}")
+        pen = pg.mkPen(color="#2f6f9f", width=2)
+
+        self.plot_widget.clear()
+        self.live_curve = self.plot_widget.plot(x_values, y_values, pen=pen)
 
 
 class axis_selection_dialog(QDialog):
-    def __init__(self, groups, current_group_id, current_x_key, current_y_key, parent=None):
+    def __init__(
+        self,
+        arrays,
+        segments=(),
+        current_x=0,
+        current_y=1,
+        combine_measurements=True,
+        selected_measurement_ids=(),
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Edit Axes")
-        self.groups = groups
+        self.segments = list(segments)
+        self.measurement_checks = {}
 
         layout = QFormLayout(self)
-        self.group_combo = QComboBox(self)
+        self.combine_check = QCheckBox("Combine measurement time/voltage arrays", self)
         self.x_combo = QComboBox(self)
         self.y_combo = QComboBox(self)
 
-        if len(groups) > 1:
-            self.group_combo.addItem("All measurements", "all")
-        for group in groups:
-            self.group_combo.addItem(group["label"], group["id"])
+        for index, data_array in enumerate(arrays):
+            label = self._format_array_label(index, data_array)
+            self.x_combo.addItem(label, index)
+            self.y_combo.addItem(label, index)
 
-        group_index = max(0, self.group_combo.findData(current_group_id))
-        self.group_combo.setCurrentIndex(group_index)
-        self.group_combo.currentIndexChanged.connect(self._populate_axis_combos)
-        self._populate_axis_combos()
-        self._set_current_axis(self.x_combo, current_x_key)
-        self._set_current_axis(self.y_combo, current_y_key)
+        self.x_combo.setCurrentIndex(current_x)
+        self.y_combo.setCurrentIndex(current_y)
 
-        layout.addRow("Measurement", self.group_combo)
+        if self.segments:
+            self.combine_check.setChecked(combine_measurements)
+            self.combine_check.toggled.connect(self._update_axis_controls)
+            layout.addRow("View", self.combine_check)
+
+            selected_ids = set(selected_measurement_ids)
+            if not selected_ids:
+                selected_ids = {segment["id"] for segment in self.segments}
+
+            measurement_widget = QWidget(self)
+            measurement_layout = QVBoxLayout(measurement_widget)
+            measurement_layout.setContentsMargins(0, 0, 0, 0)
+            measurement_layout.setSpacing(4)
+
+            for segment in self.segments:
+                checkbox = QCheckBox(segment["label"], measurement_widget)
+                checkbox.setChecked(segment["id"] in selected_ids)
+                self.measurement_checks[segment["id"]] = checkbox
+                measurement_layout.addWidget(checkbox)
+
+            layout.addRow("Measurements", measurement_widget)
+
         layout.addRow("X axis", self.x_combo)
         layout.addRow("Y axis", self.y_combo)
+        self._update_axis_controls()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -275,55 +310,46 @@ class axis_selection_dialog(QDialog):
         layout.addRow(buttons)
 
     def selected_axes(self):
+        selected_measurement_ids = tuple(
+            measurement_id
+            for measurement_id, checkbox in self.measurement_checks.items()
+            if checkbox.isChecked()
+        )
         return (
-            self.group_combo.currentData(),
             self.x_combo.currentData(),
             self.y_combo.currentData(),
+            self.combine_check.isChecked() and bool(self.segments),
+            selected_measurement_ids,
         )
 
-    def _populate_axis_combos(self):
-        group_id = self.group_combo.currentData()
-        axis_entries = self._axis_entries(group_id)
-        self.x_combo.clear()
-        self.y_combo.clear()
-        for entry in axis_entries:
-            self.x_combo.addItem(entry["label"], entry["axis_key"])
-            self.y_combo.addItem(entry["label"], entry["axis_key"])
+    def accept(self):
+        if self.combine_check.isChecked() and self.segments:
+            if not any(checkbox.isChecked() for checkbox in self.measurement_checks.values()):
+                QMessageBox.warning(
+                    self,
+                    "No measurements selected",
+                    "Select at least one measurement to plot.",
+                )
+                return
+        super().accept()
 
-        if self.y_combo.count() > 1:
-            self.y_combo.setCurrentIndex(1)
-
-    def _axis_entries(self, group_id):
-        if group_id == "all":
-            return _axis_entries_for_all_groups(self.groups)
-
-        current_group = next(
-            (group for group in self.groups if group["id"] == group_id),
-            None,
-        )
-        if current_group is None:
-            return []
-        return _axis_entries_for_group(current_group)
+    def _update_axis_controls(self):
+        use_combined = self.combine_check.isChecked() and bool(self.segments)
+        self.x_combo.setEnabled(not use_combined)
+        self.y_combo.setEnabled(not use_combined)
+        for checkbox in self.measurement_checks.values():
+            checkbox.setEnabled(use_combined)
 
     @staticmethod
-    def _set_current_axis(combo, axis_key):
-        if axis_key is None:
-            return
-
-        index = combo.findData(axis_key)
-        if index >= 0:
-            combo.setCurrentIndex(index)
-
-    @staticmethod
-    def format_array_label(data_array, axis_key):
-        name = getattr(data_array, "name", axis_key)
+    def _format_array_label(index, data_array):
+        name = getattr(data_array, "name", f"array_{index}")
         unit = getattr(data_array, "unit", "")
         array_type = getattr(data_array, "type", "")
 
         details = [detail for detail in (array_type, unit) if detail]
         if details:
-            return f"{name} ({', '.join(details)})"
-        return str(name)
+            return f"{index}: {name} ({', '.join(details)})"
+        return f"{index}: {name}"
 
 
 class graph_panel(QFrame):
@@ -406,8 +432,8 @@ class graph_panel(QFrame):
             )
             return
 
-        groups = _measurement_groups(measurement.dataset)
-        if not groups:
+        arrays = list(measurement.dataset.arrays())
+        if not arrays:
             QMessageBox.warning(
                 self,
                 "No data arrays",
@@ -415,24 +441,25 @@ class graph_panel(QFrame):
             )
             return
 
-        current_group_id = self.graph.selected_group_id
-        if current_group_id is None:
-            current_group_id = "all" if len(groups) > 1 else groups[0]["id"]
-        current_group = next(
-            (group for group in groups if group["id"] == current_group_id),
-            groups[0],
-        )
-        default_x_key, default_y_key = _default_axis_keys(current_group)
-        current_x_key = self.graph.selected_x_key or default_x_key
-        current_y_key = self.graph.selected_y_key or default_y_key
+        current_x = self.graph.x_index if self.graph.x_index is not None else 0
+        current_y = self.graph.y_index if self.graph.y_index is not None else min(1, len(arrays) - 1)
+        segments = _measurement_segments(measurement.dataset)
 
         dialog = axis_selection_dialog(
-            groups,
-            current_group_id=current_group_id,
-            current_x_key=current_x_key,
-            current_y_key=current_y_key,
+            arrays,
+            segments=segments,
+            current_x=current_x,
+            current_y=current_y,
+            combine_measurements=self.graph.combine_measurements,
+            selected_measurement_ids=self.graph.selected_measurement_ids,
             parent=self,
         )
         if dialog.exec():
-            group_id, x_key, y_key = dialog.selected_axes()
-            self.graph.plot_measurement(measurement, x_key=x_key, y_key=y_key, group_id=group_id)
+            x_index, y_index, combine_measurements, measurement_ids = dialog.selected_axes()
+            self.graph.plot_measurement(
+                measurement,
+                x_index=x_index,
+                y_index=y_index,
+                combine_measurements=combine_measurements,
+                measurement_ids=measurement_ids,
+            )

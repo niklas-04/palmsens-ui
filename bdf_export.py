@@ -55,7 +55,7 @@ class BdfExportError(ValueError):
     pass
 
 
-def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem: str) -> list[Path]:
+def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem: str, export_type: str) -> list[Path]:
     dataset = getattr(measurement, "dataset", None)
     if not dataset:
         raise BdfExportError("Measurement does not contain any dataset arrays.")
@@ -66,24 +66,33 @@ def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem
 
     written_paths = []
     multiple_groups = len(groups) > 1
+    dataframes = []
+    print(export_type)
 
     for group in groups:
         series = _extract_required_series(group)
         dataframe = _build_dataframe(series)
+        dataframes.append(dataframe)
         res = bdf.validate(dataframe, raise_on_error=True)
         if not res["ok"]:
             pass
         stem = filename_stem
         if multiple_groups:
             stem = f"{filename_stem}_group_{group['id']}"
-        output_path = _unique_output_path(output_dir, stem)
-        _write_csv(output_path, dataframe)
+        output_path = _unique_output_path(output_dir, stem, export_type)
+        if export_type == "csv":
+            _write_csv(output_path, dataframe)
+        elif export_type == "parquet":
+            _write_parquet(output_path, dataframe)
         written_paths.append(output_path)
 
+    combined_dataframes = pd.concat(dataframes, ignore_index=True)
+    _write_csv(f"{output_dir}/total.bdf.csv", combined_dataframes)
     return written_paths
 
 
 def _measurement_groups(dataset):
+    # TODO: Flytta ut delad logik till en utils?
     groups = {}
 
     for key, data_array in dataset.items():
@@ -217,12 +226,14 @@ def _build_dataframe(series: dict[str, list[float]]) -> pd.DataFrame:
 def _write_csv(path: Path, dataframe: pd.DataFrame):
     dataframe.to_csv(path, index=False, float_format="%.15g")
 
+def _write_parquet(path: Path, dataframe: pd.DataFrame):
+    dataframe.to_parquet(path, index=False)
 
-def _unique_output_path(output_dir: Path, stem: str) -> Path:
-    candidate = output_dir / f"{stem}.bdf.csv"
+def _unique_output_path(output_dir: Path, stem: str, export_type: str) -> Path:
+    candidate = output_dir / f"{stem}.bdf.{export_type}"
     suffix = 2
     while candidate.exists():
-        candidate = output_dir / f"{stem}_{suffix}.bdf.csv"
+        candidate = output_dir / f"{stem}_{suffix}.bdf.{export_type}"
         suffix += 1
     return candidate
 
