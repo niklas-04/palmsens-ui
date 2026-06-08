@@ -617,13 +617,6 @@ class AuroraVisualBuilder(QWidget):
         self.steps_layout = QVBoxLayout(self.steps_container)
         self.steps_layout.setContentsMargins(0, 0, 0, 0)
         self.steps_layout.setSpacing(10)
-        self.empty_state_label = QLabel(
-            "No steps yet. Pick a technique and use Add Step to start building the sequence.",
-            self.steps_container,
-        )
-        self.empty_state_label.setObjectName("auroraSectionDescription")
-        self.empty_state_label.setWordWrap(True)
-        self.steps_layout.addWidget(self.empty_state_label)
         self.steps_layout.addStretch(1)
         self.steps_scroll.setWidget(self.steps_container)
 
@@ -792,7 +785,6 @@ class AuroraVisualBuilder(QWidget):
                 if tag_name:
                     available_tags.append(tag_name)
         count = len(self.step_cards)
-        self.empty_state_label.setVisible(count == 0)
         self.sequence_meta_label.setText(
             "No steps yet" if count == 0 else f"{count} step{'s' if count != 1 else ''}"
         )

@@ -86,6 +86,7 @@ class device_selection_dialog(QDialog):
 class bdf_export_dialog(QDialog):
     def __init__(self, exportable_panels, parent=None):
         super().__init__(parent)
+        self.file_type = "csv"
         self.setWindowTitle("Export BDF")
         self.resize(420, 360)
         self._checkboxes: list[tuple[QCheckBox, object]] = []
@@ -103,6 +104,11 @@ class bdf_export_dialog(QDialog):
         self.output_dir_edit = QLineEdit(self)
         browse_button = QPushButton("Choose Folder", self)
         browse_button.clicked.connect(self.choose_output_dir)
+
+        self.file_type_combo_box = QComboBox(self)
+        self.file_type_combo_box.addItem("csv", "csv")
+        self.file_type_combo_box.addItem("parquet", "parquet")
+        layout.addWidget(self.file_type_combo_box)
 
         output_row = QWidget(self)
         output_row_layout = QGridLayout(output_row)
@@ -142,9 +148,12 @@ class bdf_export_dialog(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "Choose export folder")
         if directory:
             self.output_dir_edit.setText(directory)
-
+    
     def selected_panels(self):
         return [panel for checkbox, panel in self._checkboxes if checkbox.isChecked()]
+
+    def selected_type(self):
+        return self.file_type_combo_box.currentData()
 
     def output_directory(self) -> Path | None:
         raw_path = self.output_dir_edit.text().strip()
@@ -747,11 +756,13 @@ class main_window(QMainWindow):
             written_files = []
             for panel in dialog.selected_panels():
                 filename_stem = self._panel_export_stem(panel)
+                out_type = dialog.selected_type()
                 written_files.extend(
                     export_measurement_to_bdf_files(
                         panel.graph.measurement,
                         output_dir,
                         filename_stem,
+                        out_type
                     )
                 )
         except BdfExportError as exc:

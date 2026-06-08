@@ -59,7 +59,7 @@ class AuroraMethodEditor(QWidget):
         self.run_mode_combo.addItem("Aurora Visual Builder", "aurora_visual")
         self.run_mode_combo.addItem("Aurora Unicycler JSON", "aurora_json")
         self.run_mode_combo.addItem("Aurora Unicycler Python", "aurora_python")
-        self.header_form.addRow("Authoring mode", self.run_mode_combo)
+        self.header_form.addRow("Mode", self.run_mode_combo)
 
         self.aurora_options = QWidget(self)
         self.aurora_options_layout = QHBoxLayout(self.aurora_options)
