@@ -144,6 +144,31 @@ QLineEdit {
     selection-background-color: #2f6f9f;
 }
 
+QComboBox QAbstractItemView,
+QAbstractItemView,
+QListView {
+    background: #ffffff;
+    border: 1px solid #c7d0da;
+    color: #1f2a36;
+    outline: 0;
+    selection-background-color: #2f6f9f;
+    selection-color: #ffffff;
+}
+
+QAbstractItemView::item,
+QListView::item {
+    background: #ffffff;
+    color: #1f2a36;
+    min-height: 24px;
+    padding: 4px 8px;
+}
+
+QAbstractItemView::item:hover,
+QListView::item:hover {
+    background: #edf3f8;
+    color: #1f2a36;
+}
+
 QStatusBar {
     background: #ffffff;
     border-top: 1px solid #d8dee6;
