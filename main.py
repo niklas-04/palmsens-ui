@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pypalmsens as ps
 from app_style import APP_STYLESHEET
-from aurora_methods import load_aurora_package, render_aurora_package_for_channel
+from aurora_methods import (
+    AURORA_ADDITIONAL_MEASUREMENT_OPTIONS,
+    AURORA_DEVICE_MEASUREMENT_TYPES,
+    AURORA_DEVICE_OPTIONS,
+    AuroraExportSettings,
+    load_aurora_package,
+    render_aurora_package,
+)
 
 from bdf_export import BdfExportError, export_measurement_to_bdf_files
 from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread, QProcess
@@ -187,6 +194,7 @@ class method_configuration_dialog(QDialog):
         self.imported_package = None
         self.imported_package_path: Path | None = None
         self.field_widgets: dict[str, QLineEdit] = {}
+        self.additional_measurement_checks: dict[str, QCheckBox] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -199,7 +207,7 @@ class method_configuration_dialog(QDialog):
 
         self.run_mode_combo = QComboBox(self)
         self.run_mode_combo.addItem("PalmSens method", "native")
-        self.run_mode_combo.addItem("Imported Aurora package", "aurora_package")
+        self.run_mode_combo.addItem("Imported package", "aurora_package")
         self.run_mode_combo.addItem("MethodScript", "methodscript")
         self.form_layout.addRow("Run type", self.run_mode_combo)
 
@@ -220,17 +228,62 @@ class method_configuration_dialog(QDialog):
         package_layout.setContentsMargins(14, 14, 14, 14)
         package_layout.setSpacing(10)
 
-        package_title = QLabel("Imported Aurora Package", self.package_widget)
+        package_title = QLabel("Imported Package", self.package_widget)
         package_title.setObjectName("auroraCardTitle")
         package_layout.addWidget(package_title)
 
-        self.package_info_label = QLabel("No Aurora package loaded.", self.package_widget)
+        self.package_info_label = QLabel("No package loaded.", self.package_widget)
         self.package_info_label.setWordWrap(True)
         package_layout.addWidget(self.package_info_label)
 
-        self.load_package_button = QPushButton("Load Aurora Package", self.package_widget)
+        self.load_package_button = QPushButton("Load Package", self.package_widget)
         self.load_package_button.clicked.connect(self.load_aurora_package_file)
         package_layout.addWidget(self.load_package_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self.package_run_form = QFormLayout()
+        self.package_run_form.setContentsMargins(0, 0, 0, 0)
+        self.package_run_form.setHorizontalSpacing(12)
+        self.package_run_form.setVerticalSpacing(8)
+        package_layout.addLayout(self.package_run_form)
+
+        self.aurora_sample_name_edit = QLineEdit("", self.package_widget)
+        self.package_run_form.addRow("Sample name", self.aurora_sample_name_edit)
+
+        self.aurora_capacity_edit = QLineEdit("", self.package_widget)
+        self.package_run_form.addRow("Capacity (mAh)", self.aurora_capacity_edit)
+
+        self.aurora_device_combo = QComboBox(self.package_widget)
+        for label, value in AURORA_DEVICE_OPTIONS:
+            self.aurora_device_combo.addItem(label, value)
+        self.package_run_form.addRow("PalmSens target", self.aurora_device_combo)
+
+        self.aurora_channel_label = QLabel(str(self.run_channel()), self.package_widget)
+        self.package_run_form.addRow("Channel", self.aurora_channel_label)
+
+        self.aurora_scan_step_edit = QLineEdit("", self.package_widget)
+        self.package_run_form.addRow("Scan step voltage (V)", self.aurora_scan_step_edit)
+
+        self.aurora_eis_dc_potential_edit = QLineEdit("0.0", self.package_widget)
+        self.package_run_form.addRow("EIS DC potential (V)", self.aurora_eis_dc_potential_edit)
+
+        self.aurora_eis_dc_current_edit = QLineEdit("0.0", self.package_widget)
+        self.package_run_form.addRow("EIS DC current (mA)", self.aurora_eis_dc_current_edit)
+
+        extra_measurements_label = QLabel("Extra measurements", self.package_widget)
+        extra_measurements_label.setObjectName("auroraCardTitle")
+        package_layout.addWidget(extra_measurements_label)
+
+        self.additional_measurement_widget = QWidget(self.package_widget)
+        self.additional_measurement_layout = QGridLayout(self.additional_measurement_widget)
+        self.additional_measurement_layout.setContentsMargins(0, 0, 0, 0)
+        self.additional_measurement_layout.setHorizontalSpacing(16)
+        self.additional_measurement_layout.setVerticalSpacing(6)
+        for index, (var_type, label) in enumerate(AURORA_ADDITIONAL_MEASUREMENT_OPTIONS):
+            checkbox = QCheckBox(label, self.additional_measurement_widget)
+            checkbox.setToolTip(f"Measure MethodSCRIPT variable type {var_type} with add_meas.")
+            self.additional_measurement_checks[var_type] = checkbox
+            self.additional_measurement_layout.addWidget(checkbox, index // 2, index % 2)
+        package_layout.addWidget(self.additional_measurement_widget)
         layout.addWidget(self.package_widget)
 
         self.script_help = QLabel(self)
@@ -265,6 +318,8 @@ class method_configuration_dialog(QDialog):
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
         self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
+        self.aurora_device_combo.currentIndexChanged.connect(self.update_additional_measurements)
+        self.update_additional_measurements()
         self.rebuild_fields()
         self.rebuild_mode()
 
@@ -279,6 +334,48 @@ class method_configuration_dialog(QDialog):
             field_key: widget.text().strip()
             for field_key, widget in self.field_widgets.items()
         }
+
+    def run_channel(self) -> int:
+        if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0:
+            return self.instrument.channel
+        return 0
+
+    def update_additional_measurements(self):
+        device_key = self.aurora_device_combo.currentData()
+        supported = AURORA_DEVICE_MEASUREMENT_TYPES.get(device_key, set())
+        for var_type, checkbox in self.additional_measurement_checks.items():
+            enabled = var_type in supported
+            checkbox.setEnabled(enabled)
+            if not enabled:
+                checkbox.setChecked(False)
+
+    def selected_additional_measurements(self) -> tuple[str, ...]:
+        return tuple(
+            var_type
+            for var_type, checkbox in self.additional_measurement_checks.items()
+            if checkbox.isEnabled() and checkbox.isChecked()
+        )
+
+    def build_aurora_export_settings(self) -> AuroraExportSettings:
+        return AuroraExportSettings(
+            sample_name=self.aurora_sample_name_edit.text().strip() or None,
+            capacity_mAh=self.parse_optional_float(self.aurora_capacity_edit, "Capacity (mAh)"),
+            device_key=self.aurora_device_combo.currentData(),
+            channel=self.run_channel(),
+            scan_step_voltage_v=self.parse_optional_float(
+                self.aurora_scan_step_edit,
+                "Scan step voltage (V)",
+            ),
+            eis_dc_potential_v=self.parse_float(
+                self.aurora_eis_dc_potential_edit,
+                "EIS DC potential (V)",
+            ),
+            eis_dc_current_ma=self.parse_float(
+                self.aurora_eis_dc_current_edit,
+                "EIS DC current (mA)",
+            ),
+            additional_measurements=self.selected_additional_measurements(),
+        )
 
     def rebuild_fields(self):
         while self.field_form.rowCount():
@@ -363,17 +460,10 @@ class method_configuration_dialog(QDialog):
         if not hasattr(ps, "MethodScript"):
             raise RuntimeError(
                 "This PyPalmSens installation does not expose `MethodScript`. "
-                "Update PyPalmSens before running imported Aurora packages."
+                "Update PyPalmSens before running imported  packages."
             )
 
-        channel_override = None
-        if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0:
-            channel_override = self.instrument.channel - 1
-
-        methodscript = render_aurora_package_for_channel(
-            self.imported_package,
-            channel_override=channel_override,
-        )
+        methodscript = render_aurora_package(self.imported_package, self.build_aurora_export_settings())
         self.method_label = self.imported_package.name
         return ps.MethodScript(script=methodscript)
 
@@ -434,16 +524,10 @@ class method_configuration_dialog(QDialog):
             return "No Aurora package loaded."
 
         source_name = self.imported_package_path.name if self.imported_package_path is not None else "Unknown"
-        run_channel = (
-            self.instrument.channel - 1
-            if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0
-            else self.imported_package.settings.channel
-        )
         return (
             f"Package: {self.imported_package.name}\n"
             f"Source file: {source_name}\n"
-            f"Saved channel: {self.imported_package.settings.channel}\n"
-            f"Run channel for this panel: {run_channel}"
+            f"Run channel for this panel: {self.run_channel()}"
         )
 
     @staticmethod
