@@ -17,8 +17,17 @@ from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QAction
 import pyqtgraph as pg
 import re
+import numpy as np
 
 grouping_regex = r"^(?P<measurement>[A-Za-z_]+?)(?P<measurement_number>\d+)_(?P<group>\d+)$"
+
+
+def _canonical_measurement_name(name):
+    if name.startswith("Applied"):
+        base_name = name.removeprefix("Applied")
+        if base_name in {"Current", "Potential", "Voltage"}:
+            return base_name
+    return name
 
 class graph_widget(QWidget):
     def __init__(self):
@@ -40,17 +49,26 @@ class graph_widget(QWidget):
         self.plot_widget.getAxis("left").setTextPen("#56616f")
         layout.addWidget(self.plot_widget)
 
-    def plot_measurement(self, measurement, x_index=0, y_index=1):
+    def plot_measurement(self, measurement, selection=None):
         self.measurement = measurement
-        self.x_index = x_index
-        self.y_index = y_index
-
         dataset = self.measurement.dataset
         arrays = list(dataset.arrays())
+
         if not arrays:
             self.plot_widget.clear()
             self.live_curve = None
             return
+
+        if selection:
+            if selection["grouped"]:
+                x_values, y_values = self._concat_grouped_arrays(arrays, selection["x"], selection["y"])
+                self._plot_arrays(x_values, y_values, selection["x"], selection["y"])
+                return
+            self.x_index = selection["x"]
+            self.y_index = selection["y"]
+        else:
+            self.x_index = 0
+            self.y_index = 1
 
         if self.x_index >= len(arrays):
             self.x_index = 0
@@ -59,20 +77,66 @@ class graph_widget(QWidget):
 
         x_array = arrays[self.x_index]
         y_array = arrays[self.y_index]
-        self._plot_arrays(x_array, y_array)
+        self._plot_arrays(x_array.to_numpy(),
+                          y_array.to_numpy(),
+                          f"{x_array.name}, {x_array.unit}",
+                          f"{y_array.name}, {y_array.unit}"
+                          )
 
     def plot_live_data(self, callback_data):
         self.measurement = None
         self.x_index = 0
         self.y_index = 1
-        self._plot_arrays(callback_data.x_array, callback_data.y_array)
+        self._plot_arrays(callback_data.x_array.to_numpy(),
+                          callback_data.y_array.to_numpy(),
+                          f"{callback_data.x_array.name}, {callback_data.x_array.unit}",
+                          f"{callback_data.y_array.name}, {callback_data.y_array.unit}"
+                          )
 
-    def _plot_arrays(self, x_array, y_array):
+    def _plot_arrays(self, x_array, y_array, x_label, y_label):
         self.plot_widget.clear()
-        self.plot_widget.setLabel("bottom", f"{x_array.name}, {x_array.unit}")
-        self.plot_widget.setLabel("left", f"{y_array.name}, {y_array.unit}")
+        self.plot_widget.setLabel("bottom", f"{x_label}")
+        self.plot_widget.setLabel("left", f"{y_label}")
         pen = pg.mkPen(color="#2f6f9f", width=2)
-        self.live_curve = self.plot_widget.plot(x_array.to_numpy(), y_array.to_numpy(), pen=pen)
+        self.live_curve = self.plot_widget.plot(x_array, y_array, pen=pen)
+    
+    @staticmethod
+    def _concat_grouped_arrays(arrays, name_arr_1, name_arr_2):
+        pattern = re.compile(r"^(?P<measurement>[A-Za-z_]+?)(?P<measurement_number>\d+)_(?P<group>\d+)$")
+
+        groups = {}
+        for arr in arrays:
+            name = getattr(arr, "name", "")
+            match = pattern.match(name)
+            if not match:
+                continue
+
+            measurement = _canonical_measurement_name(match.group("measurement"))
+            if measurement not in {name_arr_1, name_arr_2}:
+                continue
+
+            group = int(match.group("group"))
+            grouped_arrays = groups.setdefault(group, {})
+            if measurement not in grouped_arrays or not match.group("measurement").startswith("Applied"):
+                grouped_arrays[measurement] = arr
+
+        concat_arr1 = []
+        concat_arr2 = []
+        for group in sorted(groups):
+            grouped_arrays = groups[group]
+            if name_arr_1 not in grouped_arrays or name_arr_2 not in grouped_arrays:
+                continue
+            x_values = np.asarray(grouped_arrays[name_arr_1].to_numpy()).ravel()
+            y_values = np.asarray(grouped_arrays[name_arr_2].to_numpy()).ravel()
+            if x_values.shape != y_values.shape:
+                continue
+            concat_arr1.extend(x_values)
+            concat_arr2.extend(y_values)
+
+        return np.asarray(concat_arr1), np.asarray(concat_arr2)
+        
+        
+        
 
 
 class axis_selection_dialog(QDialog):
@@ -115,17 +179,24 @@ class axis_selection_dialog(QDialog):
             for meas_name in self._unique_measurements():
                 self.x_combo.addItem(meas_name, meas_name)
                 self.y_combo.addItem(meas_name, meas_name)
-            return
-
-        for index, data_array in enumerate(self.arrays):
-            label = self._format_array_label(index, data_array)
-            self.x_combo.addItem(label, index)
-            self.y_combo.addItem(label, index)
-        self.x_combo.setCurrentIndex(self.current_x)
-        self.y_combo.setCurrentIndex(self.current_y)
+        else:
+            for index, data_array in enumerate(self.arrays):
+                label = self._format_array_label(index, data_array)
+                self.x_combo.addItem(label, index)
+                self.y_combo.addItem(label, index)
+        if self.checkbox.isChecked():
+            self.x_combo.setCurrentIndex(0)
+            self.y_combo.setCurrentIndex(min(1, self.y_combo.count() - 1))
+        else:
+            self.x_combo.setCurrentIndex(self.current_x)
+            self.y_combo.setCurrentIndex(self.current_y)
         
     def selected_axes(self):
-        return self.x_combo.currentData(), self.y_combo.currentData()
+        return {
+            "grouped": self.checkbox.isChecked(),
+            "x": self.x_combo.currentData(),
+            "y": self.y_combo.currentData()
+        }
 
     @staticmethod
     def _format_array_label(index, data_array):
@@ -146,7 +217,7 @@ class axis_selection_dialog(QDialog):
             name = getattr(data_array, "name", "")
             match = pattern.match(name)
             if match:
-                names.append(match.group("measurement"))
+                names.append(_canonical_measurement_name(match.group("measurement")))
 
         return sorted(set(names))
 
@@ -222,7 +293,6 @@ class graph_panel(QFrame):
 
     def edit_axes(self):
         measurement = self.graph.measurement
-        print(measurement.dataset.array_names)
         if measurement is None:
             QMessageBox.information(
                 self,
@@ -240,10 +310,10 @@ class graph_panel(QFrame):
             )
             return
 
-        current_x = self.graph.x_index if self.graph.x_index is not None else 0
-        current_y = self.graph.y_index if self.graph.y_index is not None else min(1, len(arrays) - 1)
+        current_x = self.graph.x_index if isinstance(self.graph.x_index, int) else 0
+        current_y = self.graph.y_index if isinstance(self.graph.y_index, int) else min(1, len(arrays) - 1)
 
         dialog = axis_selection_dialog(arrays, current_x=current_x, current_y=current_y, parent=self)
         if dialog.exec():
-            x_index, y_index = dialog.selected_axes()
-            self.graph.plot_measurement(measurement, x_index=x_index, y_index=y_index)
+            selection = dialog.selected_axes()
+            self.graph.plot_measurement(measurement, selection=selection)
