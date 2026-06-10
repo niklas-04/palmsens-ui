@@ -55,7 +55,13 @@ class BdfExportError(ValueError):
     pass
 
 
-def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem: str, export_type: str) -> list[Path]:
+def export_measurement_to_bdf_files(
+    measurement,
+    output_dir: Path,
+    filename_stem: str,
+    export_type: str,
+    export_separate: bool = False,
+) -> list[Path]:
     dataset = getattr(measurement, "dataset", None)
     if not dataset:
         raise BdfExportError("Measurement does not contain any dataset arrays.")
@@ -67,7 +73,6 @@ def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem
     written_paths = []
     multiple_groups = len(groups) > 1
     dataframes = []
-    print(export_type)
 
     for group in groups:
         series = _extract_required_series(group)
@@ -79,15 +84,15 @@ def export_measurement_to_bdf_files(measurement, output_dir: Path, filename_stem
         stem = filename_stem
         if multiple_groups:
             stem = f"{filename_stem}_group_{group['id']}"
-        output_path = _unique_output_path(output_dir, stem, export_type)
-        if export_type == "csv":
-            _write_csv(output_path, dataframe)
-        elif export_type == "parquet":
-            _write_parquet(output_path, dataframe)
-        written_paths.append(output_path)
+        if export_separate:
+            output_path = _unique_output_path(output_dir, stem, export_type)
+            _write_dataframe(output_path, dataframe, export_type)
+            written_paths.append(output_path)
 
     combined_dataframes = pd.concat(dataframes, ignore_index=True)
-    _write_csv(f"{output_dir}/total.bdf.csv", combined_dataframes)
+    total_path = _unique_output_path(output_dir, f"{filename_stem}_total", export_type)
+    _write_dataframe(total_path, combined_dataframes, export_type)
+    written_paths.append(total_path)
     return written_paths
 
 
@@ -228,6 +233,14 @@ def _write_csv(path: Path, dataframe: pd.DataFrame):
 
 def _write_parquet(path: Path, dataframe: pd.DataFrame):
     dataframe.to_parquet(path, index=False)
+
+def _write_dataframe(path: Path, dataframe: pd.DataFrame, export_type: str):
+    if export_type == "csv":
+        _write_csv(path, dataframe)
+    elif export_type == "parquet":
+        _write_parquet(path, dataframe)
+    else:
+        raise BdfExportError(f"Unsupported BDF export type: {export_type}")
 
 def _unique_output_path(output_dir: Path, stem: str, export_type: str) -> Path:
     candidate = output_dir / f"{stem}.bdf.{export_type}"
