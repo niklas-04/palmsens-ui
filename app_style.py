@@ -75,6 +75,14 @@ QFrame#auroraStepCard[stepType="open_circuit_voltage"] {
     border-left: 5px solid #0f766e;
 }
 
+QFrame#auroraStepCard[stepType="wait"] {
+    border-left: 5px solid #0891b2;
+}
+
+QFrame#auroraStepCard[stepType="temperature"] {
+    border-left: 5px solid #dc2626;
+}
+
 QFrame#auroraStepCard[stepType="constant_current"] {
     border-left: 5px solid #2563eb;
 }

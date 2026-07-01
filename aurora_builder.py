@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import aurora_unicycler
+from aurora_unicycler._core import Temperature
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -148,6 +149,31 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         builder=lambda params: aurora_unicycler.OpenCircuitVoltage(**params),
         summary_builder=lambda params: _summary_from_parts(f"{params.get('until_time_s', '')} s"),
     ),
+    "wait": BuilderStepSpec(
+        key="wait",
+        label="Wait",
+        fields=(
+            BuilderFieldSpec("until_time_s", "Duration (s)", "60", parse_required_float),
+        ),
+        builder=lambda params: aurora_unicycler.Wait(**params),
+        summary_builder=lambda params: _summary_from_parts(f"{params.get('until_time_s', '')} s"),
+    ),
+    "temperature": BuilderStepSpec(
+        key="temperature",
+        label="Temperature",
+        fields=(
+            BuilderFieldSpec("until_temp_c", "Target temperature (degC)", "25", parse_required_float),
+            BuilderFieldSpec("wait_after_s", "Wait after target (s)", "60", parse_required_float),
+            BuilderFieldSpec("ramp_rate", "Ramp rate (degC/min)", "0.35", parse_required_float),
+        ),
+        builder=lambda params: Temperature(**params),
+        summary_builder=lambda params: _summary_from_parts(
+            f"{params.get('until_temp_c', '')} degC",
+            f"{params.get('ramp_rate', '')} degC/min" if params.get("ramp_rate") else "",
+            f"wait {params.get('wait_after_s', '')} s" if params.get("wait_after_s") else "",
+            "INTE IMPLEMENTERAD",
+        ),
+    ),
     "constant_current": BuilderStepSpec(
         key="constant_current",
         label="Constant Current",
@@ -225,6 +251,8 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
 STEP_ORDER = (
     "tag",
     "open_circuit_voltage",
+    "wait",
+    "temperature",
     "constant_current",
     "constant_voltage",
     "voltage_scan",
