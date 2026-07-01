@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import bdf
@@ -7,20 +8,7 @@ import pandas as pd
 from measurement_data import measurement_dataset_views
 
 
-_GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$") # Matchar: mätningar + grippering
-
-_TIME_ALIASES = (
-    "time",
-    "testtime",
-    "elapsedtime",
-)
-_VOLTAGE_ALIASES = (
-    "voltage",
-    "potential",
-)
-_CURRENT_ALIASES = (
-    "current",
-)
+_GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$")
 
 _TIME_FACTORS = {
     "s": 1.0,
@@ -42,15 +30,220 @@ _TIME_FACTORS = {
 
 _VOLTAGE_FACTORS = {
     "v": 1.0,
+    "volt": 1.0,
+    "volts": 1.0,
     "mv": 1e-3,
+    "millivolt": 1e-3,
+    "millivolts": 1e-3,
 }
 
 _CURRENT_FACTORS = {
     "a": 1.0,
+    "amp": 1.0,
+    "amps": 1.0,
+    "ampere": 1.0,
+    "amperes": 1.0,
     "ma": 1e-3,
+    "milliamp": 1e-3,
+    "milliamps": 1e-3,
+    "milliampere": 1e-3,
+    "milliamperes": 1e-3,
     "ua": 1e-6,
+    "microamp": 1e-6,
+    "microamps": 1e-6,
+    "microampere": 1e-6,
+    "microamperes": 1e-6,
     "na": 1e-9,
+    "nanoamp": 1e-9,
+    "nanoamps": 1e-9,
+    "nanoampere": 1e-9,
+    "nanoamperes": 1e-9,
 }
+
+_RESISTANCE_FACTORS = {
+    "ohm": 1.0,
+    "ohms": 1.0,
+    "omega": 1.0,
+    "kohm": 1e3,
+    "kiloohm": 1e3,
+    "mohm": 1e-3,
+    "milliohm": 1e-3,
+    "uohm": 1e-6,
+    "microohm": 1e-6,
+}
+
+_PRESSURE_FACTORS = {
+    "pa": 1.0,
+    "pascal": 1.0,
+    "pascals": 1.0,
+    "kpa": 1e3,
+    "kilopascal": 1e3,
+    "kilopascals": 1e3,
+    "mpa": 1e6,
+    "megapascal": 1e6,
+    "megapascals": 1e6,
+    "bar": 1e5,
+    "mbar": 100.0,
+}
+
+_TEMPERATURE_FACTORS = {
+    "degc": 1.0,
+    "c": 1.0,
+    "celsius": 1.0,
+    "degreecelsius": 1.0,
+    "degreescelsius": 1.0,
+}
+
+_CAPACITY_FACTORS = {
+    "ah": 1.0,
+    "amperehour": 1.0,
+    "amperehours": 1.0,
+    "mah": 1e-3,
+    "milliamperehour": 1e-3,
+    "milliamperehours": 1e-3,
+    "uah": 1e-6,
+    "microamperehour": 1e-6,
+    "microamperehours": 1e-6,
+}
+
+_ENERGY_FACTORS = {
+    "wh": 1.0,
+    "watthour": 1.0,
+    "watthours": 1.0,
+    "mwh": 1e-3,
+    "milliwatthour": 1e-3,
+    "milliwatthours": 1e-3,
+    "kwh": 1e3,
+    "kilowatthour": 1e3,
+    "kilowatthours": 1e3,
+}
+
+_FREQUENCY_FACTORS = {
+    "hz": 1.0,
+    "hertz": 1.0,
+    "khz": 1e3,
+    "kilohertz": 1e3,
+    "mhz": 1e6,
+    "megahertz": 1e6,
+}
+
+_ANGLE_FACTORS = {
+    "deg": 1.0,
+    "degree": 1.0,
+    "degrees": 1.0,
+}
+
+_POWER_FACTORS = {
+    "w": 1.0,
+    "watt": 1.0,
+    "watts": 1.0,
+    "mw": 1e-3,
+    "milliwatt": 1e-3,
+    "milliwatts": 1e-3,
+    "kw": 1e3,
+    "kilowatt": 1e3,
+    "kilowatts": 1e3,
+}
+
+_COUNT_FACTORS = {
+    "": 1.0,
+    "1": 1.0,
+    "one": 1.0,
+    "unitone": 1.0,
+    "dimensionless": 1.0,
+}
+
+
+@dataclass(frozen=True)
+class _BdfTerm:
+    key: str
+    label: str
+    aliases: tuple[str, ...]
+    unit_factors: dict[str, float] | None = None
+    value_type: str = "float"
+    required: bool = False
+
+
+def _term(
+    key: str,
+    label: str,
+    aliases: tuple[str, ...],
+    unit_factors: dict[str, float] | None = None,
+    value_type: str = "float",
+    required: bool = False,
+) -> _BdfTerm:
+    return _BdfTerm(key, label, aliases + (key, label), unit_factors, value_type, required)
+
+
+def _normalize_text(value) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
+
+
+_BDF_TERMS = (
+    _term("ac_internal_resistance_ohm", "AC Internal Resistance / ohm", ("ac_resistance_ohm", "acr"), _RESISTANCE_FACTORS),
+    _term("absolute_impedance_ohm", "Absolute Impedance / ohm", ("impedance_modulus", "z_abs", "abs_z"), _RESISTANCE_FACTORS),
+    _term("ambient_pressure_pa", "Ambient Pressure / Pa", ("ambient_pressure_pascal", "ambient_pressure", "ambient_air_pressure"), _PRESSURE_FACTORS),
+    _term("ambient_temperature_celsius", "Ambient Temperature / degC", ("ambient_temperature_degc", "chamber_temperature", "environment_temperature"), _TEMPERATURE_FACTORS),
+    _term("applied_pressure_pa", "Applied Pressure / Pa", ("applied_pressure_pascal", "applied_pressure"), _PRESSURE_FACTORS),
+    _term("charging_capacity_ah", "Charging Capacity / Ah", ("charging_capacity_ampere_hour", "charge_capacity_ah"), _CAPACITY_FACTORS),
+    _term("charging_energy_wh", "Charging Energy / Wh", ("charging_energy_watt_hour", "charge_energy_wh"), _ENERGY_FACTORS),
+    _term("cumulative_capacity_ah", "Cumulative Capacity / Ah", ("cumulative_capacity_ampere_hour", "total_capacity_ah", "throughput_capacity_ah"), _CAPACITY_FACTORS),
+    _term("cumulative_energy_wh", "Cumulative Energy / Wh", ("cumulative_energy_watt_hour", "total_energy_wh", "throughput_energy_wh"), _ENERGY_FACTORS),
+    _term("current_ampere", "Current / A", ("current_a", "current", "i"), _CURRENT_FACTORS, required=True),
+    _term("cycle_charging_capacity_ah", "Cycle Charging Capacity / Ah", ("cycle_charge_capacity_ah", "cycle_charging_capacity_ampere_hour"), _CAPACITY_FACTORS),
+    _term("cycle_charging_energy_wh", "Cycle Charging Energy / Wh", ("cycle_charge_energy_wh", "cycle_charging_energy_watt_hour"), _ENERGY_FACTORS),
+    _term("cycle_count", "Cycle Count / 1", ("cycle_count_1", "cycle_dimensionless", "cycle_number", "cycle"), _COUNT_FACTORS),
+    _term("cycle_cumulative_capacity_ah", "Cycle Cumulative Capacity / Ah", ("cycle_cumulative_capacity_ampere_hour",), _CAPACITY_FACTORS),
+    _term("cycle_cumulative_energy_wh", "Cycle Cumulative Energy / Wh", ("cycle_cumulative_energy_watt_hour",), _ENERGY_FACTORS),
+    _term("cycle_discharging_capacity_ah", "Cycle Discharging Capacity / Ah", ("cycle_discharge_capacity_ah", "cycle_discharging_capacity_ampere_hour"), _CAPACITY_FACTORS),
+    _term("cycle_discharging_energy_wh", "Cycle Discharging Energy / Wh", ("cycle_discharge_energy_wh", "cycle_discharging_energy_watt_hour"), _ENERGY_FACTORS),
+    _term("cycle_net_capacity_ah", "Cycle Net Capacity / Ah", ("cycle_net_capacity_ampere_hour",), _CAPACITY_FACTORS),
+    _term("cycle_net_energy_wh", "Cycle Net Energy / Wh", ("cycle_net_energy_watt_hour",), _ENERGY_FACTORS),
+    _term("dc_internal_resistance_ohm", "DC Internal Resistance / ohm", ("dc_resistance_ohm", "dcir", "dcir_ohm"), _RESISTANCE_FACTORS),
+    _term("discharging_capacity_ah", "Discharging Capacity / Ah", ("discharging_capacity_ampere_hour", "discharge_capacity_ah"), _CAPACITY_FACTORS),
+    _term("discharging_energy_wh", "Discharging Energy / Wh", ("discharging_energy_watt_hour", "discharge_energy_wh"), _ENERGY_FACTORS),
+    _term("frequency_hertz", "Frequency / Hz", ("frequency", "freq", "f"), _FREQUENCY_FACTORS),
+    _term("imaginary_impedance_ohm", "Imaginary Impedance / ohm", ("z_imag", "zimag", "z_im", "zim", "z''", "z``"), _RESISTANCE_FACTORS),
+    _term("internal_resistance_ohm", "Internal Resistance / ohm", ("internal_resistance", "resistance", "r_int"), _RESISTANCE_FACTORS),
+    _term("net_capacity_ah", "Net Capacity / Ah", ("net_capacity_ampere_hour", "q_q0"), _CAPACITY_FACTORS),
+    _term("net_energy_wh", "Net Energy / Wh", ("net_energy_watt_hour",), _ENERGY_FACTORS),
+    _term("phase_degree", "Phase / deg", ("phase", "phase_angle", "phase_deg"), _ANGLE_FACTORS),
+    _term("power_watt", "Power / W", ("power_w", "power", "p"), _POWER_FACTORS),
+    _term("real_impedance_ohm", "Real Impedance / ohm", ("z_real", "zreal", "z_re", "zre", "z'", "z`"), _RESISTANCE_FACTORS),
+    _term("record_index", "Record Index / 1", ("record", "record_number", "data_point", "data_point_index"), _COUNT_FACTORS),
+    _term("step_charging_capacity_ah", "Step Charging Capacity / Ah", ("step_charge_capacity_ah", "step_charging_capacity_ampere_hour", "q_charge"), _CAPACITY_FACTORS),
+    _term("step_charging_energy_wh", "Step Charging Energy / Wh", ("step_charge_energy_wh", "step_charging_energy_watt_hour"), _ENERGY_FACTORS),
+    _term("step_count", "Step Count / 1", ("step_count_1", "step_dimensionless", "step_number"), _COUNT_FACTORS),
+    _term("step_cumulative_capacity_ah", "Step Cumulative Capacity / Ah", ("step_capacity_ah", "step_cumulative_capacity_ampere_hour"), _CAPACITY_FACTORS),
+    _term("step_cumulative_energy_wh", "Step Cumulative Energy / Wh", ("step_energy_wh", "step_cumulative_energy_watt_hour"), _ENERGY_FACTORS),
+    _term("step_discharging_capacity_ah", "Step Discharging Capacity / Ah", ("step_discharge_capacity_ah", "step_discharging_capacity_ampere_hour", "q_discharge"), _CAPACITY_FACTORS),
+    _term("step_discharging_energy_wh", "Step Discharging Energy / Wh", ("step_discharge_energy_wh", "step_discharging_energy_watt_hour"), _ENERGY_FACTORS),
+    _term("step_id", "Step ID", ("step_index_in_program", "program_step", "ns"), _COUNT_FACTORS),
+    _term("step_index", "Step Index / 1", ("step_index_1", "within_step_index"), _COUNT_FACTORS),
+    _term("step_net_capacity_ah", "Step Net Capacity / Ah", ("step_net_capacity_ampere_hour",), _CAPACITY_FACTORS),
+    _term("step_net_energy_wh", "Step Net Energy / Wh", ("step_net_energy_watt_hour",), _ENERGY_FACTORS),
+    _term("step_time_second", "Step Time / s", ("step_time_s", "step_time", "steptime", "step_elapsed_time"), _TIME_FACTORS),
+    _term("step_type", "Step Type", ("mode", "operation_mode"), None, "string"),
+    _term("surface_pressure_pa", "Surface Pressure / Pa", ("surface_pressure_pascal", "surface_pressure", "skin_pressure"), _PRESSURE_FACTORS),
+    _term("surface_temperature_celsius", "Surface Temperature / degC", ("surface_temperature_degc", "surface_temperature", "skin_temperature"), _TEMPERATURE_FACTORS),
+    _term("temperature_t1_celsius", "Temperature T1 / degC", ("surface_temperature_t1_celsius", "temperature_t1_degc", "temperature_t1", "temperature", "temp", "t1"), _TEMPERATURE_FACTORS),
+    _term("temperature_t2_celsius", "Temperature T2 / degC", ("surface_temperature_t2_celsius", "temperature_t2_degc", "temperature_t2", "t2"), _TEMPERATURE_FACTORS),
+    _term("temperature_t3_celsius", "Temperature T3 / degC", ("surface_temperature_t3_celsius", "temperature_t3_degc", "temperature_t3", "t3"), _TEMPERATURE_FACTORS),
+    _term("temperature_t4_celsius", "Temperature T4 / degC", ("surface_temperature_t4_celsius", "temperature_t4_degc", "temperature_t4", "t4"), _TEMPERATURE_FACTORS),
+    _term("temperature_t5_celsius", "Temperature T5 / degC", ("surface_temperature_t5_celsius", "temperature_t5_degc", "temperature_t5", "t5"), _TEMPERATURE_FACTORS),
+    _term("test_time_second", "Test Time / s", ("test_time_s", "test_time", "testtime", "elapsed_time", "elapsedtime", "time"), _TIME_FACTORS, required=True),
+    _term("unix_time_second", "Unix Time / s", ("unix_time_s", "unix_time", "timestamp", "epoch_time"), _TIME_FACTORS),
+    _term("voltage_volt", "Voltage / V", ("voltage_v", "voltage", "potential", "e", "v"), _VOLTAGE_FACTORS, required=True),
+)
+
+_BDF_TERMS_BY_KEY = {term.key: term for term in _BDF_TERMS}
+_REQUIRED_BDF_KEYS = tuple(term.key for term in _BDF_TERMS if term.required)
+_BDF_ALIAS_TO_KEY: dict[str, str] = {}
+for _term_definition in _BDF_TERMS:
+    for _alias in _term_definition.aliases:
+        _BDF_ALIAS_TO_KEY.setdefault(_normalize_text(_alias), _term_definition.key)
 
 
 class BdfExportError(ValueError):
@@ -78,7 +271,7 @@ def export_measurement_to_bdf_files(
         multiple_groups = len(groups) > 1
         for group in groups:
             try:
-                series = _extract_required_series(group)
+                series = _extract_bdf_series(group)
             except BdfExportError as exc:
                 if len(dataset_views) == 1:
                     raise
@@ -88,6 +281,7 @@ def export_measurement_to_bdf_files(
             dataframe = _build_dataframe(series)
             dataframes.append(dataframe)
             res = bdf.validate(dataframe, raise_on_error=True)
+            print(res)
             if not res["ok"]:
                 pass
             stem = filename_stem
@@ -113,7 +307,6 @@ def export_measurement_to_bdf_files(
 
 
 def _measurement_groups(dataset):
-    # TODO: Flytta ut delad logik till en utils?
     groups = {}
 
     for key, data_array in dataset.items():
@@ -150,7 +343,7 @@ def _measurement_groups(dataset):
     )
 
 
-def _extract_required_series(group) -> dict[str, list[float]]:
+def _extract_bdf_series(group) -> dict[str, list]:
     series = {}
 
     for entry in group["arrays"]:
@@ -158,47 +351,50 @@ def _extract_required_series(group) -> dict[str, list[float]]:
         base_key = entry["base_key"]
         array_name = getattr(data_array, "name", base_key)
         array_type = getattr(data_array, "type", "")
+        quantity = getattr(data_array, "quantity", "")
         unit = getattr(data_array, "unit", "")
         values = data_array.to_numpy()
 
-        column_key = _detect_required_column(base_key, array_name, array_type, unit)
+        column_key = _detect_bdf_column(base_key, array_name, array_type, quantity, unit)
         if column_key is None or column_key in series:
             continue
 
-        factor = _conversion_factor(column_key, unit)
-        series[column_key] = [_to_float(value) * factor for value in values]
+        text_values = (base_key, array_name, array_type, quantity)
+        series[column_key] = _convert_values(column_key, unit, values, text_values)
 
-    missing_columns = [
-        column_key
-        for column_key in ("test_time_second", "voltage_volt", "current_ampere")
-        if column_key not in series
-    ]
+    missing_columns = [column_key for column_key in _REQUIRED_BDF_KEYS if column_key not in series]
     if missing_columns:
         raise BdfExportError(
             "Missing required BDF quantities. The measurement must include time, voltage, and current arrays."
         )
 
     length = len(series["test_time_second"])
-    if len(series["voltage_volt"]) != length or len(series["current_ampere"]) != length:
-        raise BdfExportError("Required BDF arrays do not have matching lengths.")
+    mismatched_columns = [column_key for column_key, values in series.items() if len(values) != length]
+    if mismatched_columns:
+        labels = ", ".join(_BDF_TERMS_BY_KEY[column_key].label for column_key in mismatched_columns)
+        raise BdfExportError(f"BDF arrays do not have matching lengths: {labels}.")
 
     return series
 
 
-def _detect_required_column(base_key: str, array_name: str, array_type: str, unit: str) -> str | None:
+def _detect_bdf_column(base_key: str, array_name: str, array_type: str, quantity: str, unit: str) -> str | None:
     texts = (
         _normalize_text(base_key),
         _normalize_text(array_name),
         _normalize_text(array_type),
+        _normalize_text(quantity),
     )
     unit_key = _normalize_unit(unit)
 
-    if any(alias in text for text in texts for alias in _TIME_ALIASES):
-        return "test_time_second"
-    if any(alias in text for text in texts for alias in _VOLTAGE_ALIASES):
-        return "voltage_volt"
-    if any(alias in text for text in texts for alias in _CURRENT_ALIASES):
-        return "current_ampere"
+    for text in texts:
+        column_key = _BDF_ALIAS_TO_KEY.get(text)
+        if column_key is not None:
+            return column_key
+
+    for term in _BDF_TERMS:
+        aliases = tuple(_normalize_text(alias) for alias in term.aliases)
+        if any(len(alias) >= 3 and alias in text for text in texts for alias in aliases):
+            return term.key
 
     if unit_key in _TIME_FACTORS:
         return "test_time_second"
@@ -210,45 +406,116 @@ def _detect_required_column(base_key: str, array_name: str, array_type: str, uni
     return None
 
 
-def _conversion_factor(column_key: str, unit: str) -> float:
+def _convert_values(column_key: str, unit: str, values, text_values: tuple) -> list:
+    term = _BDF_TERMS_BY_KEY[column_key]
+    if term.value_type == "string":
+        return [_to_string(value) for value in values]
+
+    factor = _conversion_factor(column_key, unit, text_values)
+    return [_to_float(value) * factor for value in values]
+
+
+def _conversion_factor(column_key: str, unit: str, text_values: tuple = ()) -> float:
     unit_key = _normalize_unit(unit)
+    term = _BDF_TERMS_BY_KEY.get(column_key)
+    if term is None:
+        raise BdfExportError(f"Unsupported BDF column: {column_key}")
 
-    if column_key == "test_time_second":
-        factor = _TIME_FACTORS.get(unit_key)
-        if factor is None:
-            raise BdfExportError(f"Unsupported time unit for BDF export: {unit!r}")
+    if term.unit_factors is None:
+        return 1.0
+
+    factor = term.unit_factors.get(unit_key)
+    if factor is not None:
         return factor
 
-    if column_key == "voltage_volt":
-        factor = _VOLTAGE_FACTORS.get(unit_key)
-        if factor is None:
-            raise BdfExportError(f"Unsupported voltage unit for BDF export: {unit!r}")
-        return factor
+    inferred_unit_key = _infer_unit_from_text(term.unit_factors, text_values)
+    if inferred_unit_key is not None:
+        return term.unit_factors[inferred_unit_key]
 
-    if column_key == "current_ampere":
-        factor = _CURRENT_FACTORS.get(unit_key)
-        if factor is None:
-            raise BdfExportError(f"Unsupported current unit for BDF export: {unit!r}")
-        return factor
+    if unit_key == "":
+        canonical_unit_key = _canonical_unit_key(column_key)
+        if canonical_unit_key in term.unit_factors:
+            return term.unit_factors[canonical_unit_key]
 
-    raise BdfExportError(f"Unsupported BDF column: {column_key}")
+    raise BdfExportError(f"Unsupported unit for BDF column {term.label}: {unit!r}")
 
 
-def _build_dataframe(series: dict[str, list[float]]) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "Test Time / s": series["test_time_second"],
-            "Voltage / V": series["voltage_volt"],
-            "Current / A": series["current_ampere"],
-        }
+def _infer_unit_from_text(unit_factors: dict[str, float], text_values: tuple) -> str | None:
+    unit_tokens = set()
+    for value in text_values:
+        unit_tokens.update(_unit_tokens(value))
+
+    normalized_texts = tuple(_normalize_text(value) for value in text_values)
+    for unit_key in sorted(unit_factors, key=len, reverse=True):
+        if not unit_key:
+            continue
+        normalized_unit = _normalize_unit(unit_key)
+        if normalized_unit in unit_tokens:
+            return unit_key
+
+    for unit_key in sorted(unit_factors, key=len, reverse=True):
+        if not unit_key:
+            continue
+        normalized_unit = _normalize_text(unit_key)
+        if any(normalized_unit and text.endswith(normalized_unit) for text in normalized_texts):
+            return unit_key
+    return None
+
+
+def _unit_tokens(value) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return tuple(
+        _normalize_unit(token)
+        for token in re.split(r"[^A-Za-z0-9]+", str(value))
+        if token
     )
+
+
+def _canonical_unit_key(column_key: str) -> str:
+    if column_key.endswith("_ohm"):
+        return "ohm"
+    if column_key.endswith("_pa"):
+        return "pa"
+    if column_key.endswith("_celsius"):
+        return "degc"
+    if column_key.endswith("_ah"):
+        return "ah"
+    if column_key.endswith("_wh"):
+        return "wh"
+    if column_key.endswith("_hertz"):
+        return "hz"
+    if column_key.endswith("_degree"):
+        return "deg"
+    if column_key.endswith("_watt"):
+        return "w"
+    if column_key.endswith("_ampere"):
+        return "a"
+    if column_key.endswith("_volt"):
+        return "v"
+    if column_key.endswith("_second"):
+        return "s"
+    if column_key in {"cycle_count", "record_index", "step_count", "step_id", "step_index"}:
+        return ""
+    return ""
+
+
+def _build_dataframe(series: dict[str, list]) -> pd.DataFrame:
+    dataframe_columns = {}
+    for term in _BDF_TERMS:
+        if term.key in series:
+            dataframe_columns[term.label] = series[term.key]
+
+    return pd.DataFrame(dataframe_columns)
 
 
 def _write_csv(path: Path, dataframe: pd.DataFrame):
     dataframe.to_csv(path, index=False, float_format="%.15g")
 
+
 def _write_parquet(path: Path, dataframe: pd.DataFrame):
     dataframe.to_parquet(path, index=False)
+
 
 def _write_dataframe(path: Path, dataframe: pd.DataFrame, export_type: str):
     if export_type == "csv":
@@ -257,6 +524,7 @@ def _write_dataframe(path: Path, dataframe: pd.DataFrame, export_type: str):
         _write_parquet(path, dataframe)
     else:
         raise BdfExportError(f"Unsupported BDF export type: {export_type}")
+
 
 def _unique_output_path(output_dir: Path, stem: str, export_type: str) -> Path:
     candidate = output_dir / f"{stem}.bdf.{export_type}"
@@ -272,23 +540,23 @@ def _sanitize_stem(value: str) -> str:
     return cleaned or "dataset"
 
 
-def _normalize_text(value) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
-
-
 def _normalize_unit(unit) -> str:
     if unit is None:
         return ""
 
     normalized = str(unit).strip().casefold()
     normalized = normalized.replace(" ", "")
-    normalized = normalized.replace("μ", "u")
-    normalized = normalized.replace("µ", "u")
-    normalized = normalized.replace("°", "deg")
+    normalized = normalized.replace("\N{GREEK SMALL LETTER MU}", "u")
+    normalized = normalized.replace("\N{MICRO SIGN}", "u")
+    normalized = normalized.replace("\u00ce\u00bc", "u")
+    normalized = normalized.replace("\u00c2\u00b5", "u")
+    normalized = normalized.replace("\N{DEGREE SIGN}", "deg")
+    normalized = normalized.replace("\u00c2\u00b0", "deg")
+    normalized = normalized.replace("\N{GREEK CAPITAL LETTER OMEGA}", "ohm")
+    normalized = normalized.replace("\N{GREEK SMALL LETTER OMEGA}", "ohm")
     normalized = normalized.replace("deg.c", "degc")
     normalized = normalized.replace("degcelsius", "degc")
+    normalized = normalized.replace("degreecelsius", "degc")
     return normalized
 
 
@@ -297,3 +565,8 @@ def _to_float(value) -> float:
         value = value.item()
     return float(value)
 
+
+def _to_string(value) -> str:
+    if hasattr(value, "item"):
+        value = value.item()
+    return "" if value is None else str(value)
