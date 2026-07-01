@@ -1,3 +1,4 @@
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -5,7 +6,7 @@ from pathlib import Path
 import bdf
 import pandas as pd
 
-from measurement_data import measurement_dataset_views
+from measurement_data import dataset_arrays, measurement_dataset_views
 
 
 _GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$")
@@ -240,6 +241,26 @@ _BDF_TERMS = (
 
 _BDF_TERMS_BY_KEY = {term.key: term for term in _BDF_TERMS}
 _REQUIRED_BDF_KEYS = tuple(term.key for term in _BDF_TERMS if term.required)
+_STEP_DERIVED_KEYS = {
+    "step_charging_capacity_ah",
+    "step_discharging_capacity_ah",
+    "step_cumulative_capacity_ah",
+    "step_net_capacity_ah",
+    "step_charging_energy_wh",
+    "step_discharging_energy_wh",
+    "step_cumulative_energy_wh",
+    "step_net_energy_wh",
+}
+_CYCLE_DERIVED_KEYS = {
+    "cycle_charging_capacity_ah",
+    "cycle_discharging_capacity_ah",
+    "cycle_cumulative_capacity_ah",
+    "cycle_net_capacity_ah",
+    "cycle_charging_energy_wh",
+    "cycle_discharging_energy_wh",
+    "cycle_cumulative_energy_wh",
+    "cycle_net_energy_wh",
+}
 _BDF_ALIAS_TO_KEY: dict[str, str] = {}
 for _term_definition in _BDF_TERMS:
     for _alias in _term_definition.aliases:
@@ -256,6 +277,7 @@ def export_measurement_to_bdf_files(
     filename_stem: str,
     export_type: str,
     export_separate: bool = False,
+    optional_quantity_keys: set[str] | None = None,
 ) -> list[Path]:
     dataset_views = measurement_dataset_views(measurement)
     if not dataset_views:
@@ -271,7 +293,7 @@ def export_measurement_to_bdf_files(
         multiple_groups = len(groups) > 1
         for group in groups:
             try:
-                series = _extract_bdf_series(group)
+                series = _extract_bdf_series(group, optional_quantity_keys)
             except BdfExportError as exc:
                 if len(dataset_views) == 1:
                     raise
@@ -281,9 +303,8 @@ def export_measurement_to_bdf_files(
             dataframe = _build_dataframe(series)
             dataframes.append(dataframe)
             res = bdf.validate(dataframe, raise_on_error=True)
-            print(res)
             if not res["ok"]:
-                pass
+                raise BdfExportError("Invalid battery data format dataframe")
             stem = filename_stem
             if multiple_dataset_views:
                 stem = f"{stem}_{_sanitize_stem(dataset_view.id)}"
@@ -306,10 +327,15 @@ def export_measurement_to_bdf_files(
     return written_paths
 
 
+def bdf_optional_quantity_choices() -> list[tuple[str, str]]:
+    return [(term.key, term.label) for term in _BDF_TERMS if not term.required]
+
+
 def _measurement_groups(dataset):
     groups = {}
 
-    for key, data_array in dataset.items():
+    for index, data_array in enumerate(dataset_arrays(dataset)):
+        key = _data_array_key(data_array, index)
         match = _GROUPED_KEY_PATTERN.match(key)
         if match:
             base_key = match.group("base")
@@ -343,8 +369,17 @@ def _measurement_groups(dataset):
     )
 
 
-def _extract_bdf_series(group) -> dict[str, list]:
+def _data_array_key(data_array, index: int) -> str:
+    for attribute_name in ("name", "quantity", "type"):
+        value = getattr(data_array, attribute_name, None)
+        if value:
+            return str(value)
+    return str(index)
+
+
+def _extract_bdf_series(group, optional_quantity_keys: set[str] | None = None) -> dict[str, list]:
     series = {}
+    raw_dependency_keys = _raw_dependency_keys(optional_quantity_keys)
 
     for entry in group["arrays"]:
         data_array = entry["array"]
@@ -358,6 +393,9 @@ def _extract_bdf_series(group) -> dict[str, list]:
         column_key = _detect_bdf_column(base_key, array_name, array_type, quantity, unit)
         if column_key is None or column_key in series:
             continue
+        if optional_quantity_keys is not None:
+            if column_key not in raw_dependency_keys:
+                continue
 
         text_values = (base_key, array_name, array_type, quantity)
         series[column_key] = _convert_values(column_key, unit, values, text_values)
@@ -368,13 +406,274 @@ def _extract_bdf_series(group) -> dict[str, list]:
             "Missing required BDF quantities. The measurement must include time, voltage, and current arrays."
         )
 
+    _ensure_matching_lengths(series)
+    _derive_bdf_series(series, optional_quantity_keys)
+    series = _filter_bdf_series(series, optional_quantity_keys)
+    _ensure_matching_lengths(series)
+
+    return series
+
+
+def _raw_dependency_keys(optional_quantity_keys: set[str] | None) -> set[str]:
+    if optional_quantity_keys is None:
+        return set(_BDF_TERMS_BY_KEY)
+
+    keys = set(_REQUIRED_BDF_KEYS)
+    keys.update(optional_quantity_keys)
+
+    if optional_quantity_keys.intersection({"absolute_impedance_ohm", "phase_degree"}):
+        keys.update({"real_impedance_ohm", "imaginary_impedance_ohm"})
+
+    if optional_quantity_keys.intersection(_STEP_DERIVED_KEYS):
+        keys.update({"step_count", "step_id", "step_time_second"})
+
+    if optional_quantity_keys.intersection(_CYCLE_DERIVED_KEYS):
+        keys.add("cycle_count")
+
+    return keys
+
+
+def _filter_bdf_series(series: dict[str, list], optional_quantity_keys: set[str] | None) -> dict[str, list]:
+    if optional_quantity_keys is None:
+        return series
+
+    allowed_keys = set(_REQUIRED_BDF_KEYS)
+    allowed_keys.update(optional_quantity_keys)
+    return {column_key: values for column_key, values in series.items() if column_key in allowed_keys}
+
+
+def _ensure_matching_lengths(series: dict[str, list]):
     length = len(series["test_time_second"])
     mismatched_columns = [column_key for column_key, values in series.items() if len(values) != length]
     if mismatched_columns:
         labels = ", ".join(_BDF_TERMS_BY_KEY[column_key].label for column_key in mismatched_columns)
         raise BdfExportError(f"BDF arrays do not have matching lengths: {labels}.")
 
-    return series
+
+def _derive_bdf_series(series: dict[str, list], optional_quantity_keys: set[str] | None):
+    if _quantity_requested("power_watt", series, optional_quantity_keys) and _has_keys(series, "voltage_volt", "current_ampere"):
+        series["power_watt"] = _power_values(series)
+
+    if _has_keys(series, "real_impedance_ohm", "imaginary_impedance_ohm"):
+        real = series["real_impedance_ohm"]
+        imag = series["imaginary_impedance_ohm"]
+        if _quantity_requested("absolute_impedance_ohm", series, optional_quantity_keys):
+            series["absolute_impedance_ohm"] = [math.hypot(re, im) for re, im in zip(real, imag)]
+        if _quantity_requested("phase_degree", series, optional_quantity_keys):
+            series["phase_degree"] = [math.degrees(math.atan2(im, re)) for re, im in zip(real, imag)]
+
+    _derive_capacity_series(
+        series,
+        "",
+        None,
+        {
+            "charging": "charging_capacity_ah",
+            "discharging": "discharging_capacity_ah",
+            "cumulative": "cumulative_capacity_ah",
+            "net": "net_capacity_ah",
+        },
+        optional_quantity_keys,
+    )
+    _derive_energy_series(
+        series,
+        "",
+        None,
+        {
+            "charging": "charging_energy_wh",
+            "discharging": "discharging_energy_wh",
+            "cumulative": "cumulative_energy_wh",
+            "net": "net_energy_wh",
+        },
+        optional_quantity_keys,
+    )
+
+    step_reset_flags = _segment_reset_flags(series, ("step_count", "step_id"), "step_time_second")
+    if step_reset_flags is not None:
+        _derive_capacity_series(
+            series,
+            "step",
+            step_reset_flags,
+            {
+                "charging": "step_charging_capacity_ah",
+                "discharging": "step_discharging_capacity_ah",
+                "cumulative": "step_cumulative_capacity_ah",
+                "net": "step_net_capacity_ah",
+            },
+            optional_quantity_keys,
+        )
+        _derive_energy_series(
+            series,
+            "step",
+            step_reset_flags,
+            {
+                "charging": "step_charging_energy_wh",
+                "discharging": "step_discharging_energy_wh",
+                "cumulative": "step_cumulative_energy_wh",
+                "net": "step_net_energy_wh",
+            },
+            optional_quantity_keys,
+        )
+
+    cycle_reset_flags = _segment_reset_flags(series, ("cycle_count",), None)
+    if cycle_reset_flags is not None:
+        _derive_capacity_series(
+            series,
+            "cycle",
+            cycle_reset_flags,
+            {
+                "charging": "cycle_charging_capacity_ah",
+                "discharging": "cycle_discharging_capacity_ah",
+                "cumulative": "cycle_cumulative_capacity_ah",
+                "net": "cycle_net_capacity_ah",
+            },
+            optional_quantity_keys,
+        )
+        _derive_energy_series(
+            series,
+            "cycle",
+            cycle_reset_flags,
+            {
+                "charging": "cycle_charging_energy_wh",
+                "discharging": "cycle_discharging_energy_wh",
+                "cumulative": "cycle_cumulative_energy_wh",
+                "net": "cycle_net_energy_wh",
+            },
+            optional_quantity_keys,
+        )
+
+
+def _derive_capacity_series(
+    series: dict[str, list],
+    scope: str,
+    reset_flags: list[bool] | None,
+    keys: dict[str, str],
+    optional_quantity_keys: set[str] | None,
+):
+    del scope
+    if not _has_keys(series, "test_time_second", "current_ampere"):
+        return
+
+    current = series["current_ampere"]
+    derived_values = {
+        "charging": _cumulative_integral(series["test_time_second"], [max(value, 0.0) for value in current], reset_flags),
+        "discharging": _cumulative_integral(series["test_time_second"], [max(-value, 0.0) for value in current], reset_flags),
+        "cumulative": _cumulative_integral(series["test_time_second"], [abs(value) for value in current], reset_flags),
+        "net": _cumulative_integral(series["test_time_second"], current, reset_flags),
+    }
+
+    for value_key, column_key in keys.items():
+        if _quantity_requested(column_key, series, optional_quantity_keys):
+            series[column_key] = derived_values[value_key]
+
+
+def _derive_energy_series(
+    series: dict[str, list],
+    scope: str,
+    reset_flags: list[bool] | None,
+    keys: dict[str, str],
+    optional_quantity_keys: set[str] | None,
+):
+    del scope
+    if not _has_keys(series, "test_time_second", "current_ampere", "voltage_volt"):
+        return
+
+    current = series["current_ampere"]
+    power = _power_values(series)
+    derived_values = {
+        "charging": _cumulative_integral(
+            series["test_time_second"],
+            [value if current_value > 0 else 0.0 for value, current_value in zip(power, current)],
+            reset_flags,
+        ),
+        "discharging": _cumulative_integral(
+            series["test_time_second"],
+            [-value if current_value < 0 else 0.0 for value, current_value in zip(power, current)],
+            reset_flags,
+        ),
+        "cumulative": _cumulative_integral(
+            series["test_time_second"],
+            [value * _sign(current_value) for value, current_value in zip(power, current)],
+            reset_flags,
+        ),
+        "net": _cumulative_integral(series["test_time_second"], power, reset_flags),
+    }
+
+    for value_key, column_key in keys.items():
+        if _quantity_requested(column_key, series, optional_quantity_keys):
+            series[column_key] = derived_values[value_key]
+
+
+def _cumulative_integral(times: list[float], values: list[float], reset_flags: list[bool] | None = None) -> list[float]:
+    result = [0.0] * len(times)
+    running_total = 0.0
+
+    for index in range(1, len(times)):
+        if reset_flags is not None and reset_flags[index]:
+            running_total = 0.0
+            result[index] = running_total
+            continue
+
+        delta_time = times[index] - times[index - 1]
+        if delta_time < 0:
+            raise BdfExportError("Cannot derive cumulative BDF quantities from decreasing test time.")
+
+        running_total += 0.5 * (values[index - 1] + values[index]) * delta_time / 3600.0
+        result[index] = running_total
+
+    return result
+
+
+def _segment_reset_flags(series: dict[str, list], segment_keys: tuple[str, ...], reset_time_key: str | None) -> list[bool] | None:
+    length = len(series["test_time_second"])
+    reset_flags = [False] * length
+    reset_flags[0] = True
+    has_segment_source = False
+
+    for segment_key in segment_keys:
+        if segment_key not in series:
+            continue
+        has_segment_source = True
+        values = series[segment_key]
+        for index in range(1, length):
+            if values[index] != values[index - 1]:
+                reset_flags[index] = True
+
+    if reset_time_key is not None and reset_time_key in series:
+        has_segment_source = True
+        values = series[reset_time_key]
+        for index in range(1, length):
+            if values[index] < values[index - 1] or (values[index] == 0 and values[index - 1] != 0):
+                reset_flags[index] = True
+
+    if not has_segment_source:
+        return None
+    return reset_flags
+
+
+def _quantity_requested(column_key: str, series: dict[str, list], optional_quantity_keys: set[str] | None) -> bool:
+    if column_key in series:
+        return False
+    if column_key in _REQUIRED_BDF_KEYS:
+        return True
+    return optional_quantity_keys is None or column_key in optional_quantity_keys
+
+
+def _has_keys(series: dict[str, list], *column_keys: str) -> bool:
+    return all(column_key in series for column_key in column_keys)
+
+
+def _power_values(series: dict[str, list]) -> list[float]:
+    if "power_watt" in series:
+        return series["power_watt"]
+    return [voltage * current for voltage, current in zip(series["voltage_volt"], series["current_ampere"])]
+
+
+def _sign(value: float) -> float:
+    if value > 0:
+        return 1.0
+    if value < 0:
+        return -1.0
+    return 0.0
 
 
 def _detect_bdf_column(base_key: str, array_name: str, array_type: str, quantity: str, unit: str) -> str | None:
@@ -467,7 +766,7 @@ def _unit_tokens(value) -> tuple[str, ...]:
         return ()
     return tuple(
         _normalize_unit(token)
-        for token in re.split(r"[^A-Za-z0-9]+", str(value))
+        for token in re.split(r"[\s,()/\\\[\];:]+", str(value))
         if token
     )
 

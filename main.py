@@ -5,7 +5,7 @@ import pypalmsens as ps
 from app_style import APP_STYLESHEET
 from aurora_methods import load_aurora_package, render_aurora_package_for_channel
 
-from bdf_export import BdfExportError, export_measurement_to_bdf_files
+from bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
 from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread, QProcess
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -88,8 +89,9 @@ class bdf_export_dialog(QDialog):
         super().__init__(parent)
         self.file_type = "csv"
         self.setWindowTitle("Export BDF")
-        self.resize(420, 360)
+        self.resize(560, 640)
         self._checkboxes: list[tuple[QCheckBox, object]] = []
+        self._quantity_checkboxes: list[tuple[QCheckBox, str]] = []
 
         layout = QVBoxLayout(self)
 
@@ -137,6 +139,42 @@ class bdf_export_dialog(QDialog):
         self.checkbox_layout.addStretch(1)
         layout.addWidget(self.checkbox_container, 1)
 
+        quantity_header = QLabel("Additional BDF quantities", self)
+        layout.addWidget(quantity_header)
+
+        quantity_actions = QWidget(self)
+        quantity_actions_layout = QHBoxLayout(quantity_actions)
+        quantity_actions_layout.setContentsMargins(0, 0, 0, 0)
+        quantity_actions_layout.setSpacing(8)
+
+        select_all_button = QPushButton("Select All", self)
+        select_all_button.clicked.connect(self.select_all_optional_quantities)
+        clear_button = QPushButton("Clear", self)
+        clear_button.clicked.connect(self.clear_optional_quantities)
+        quantity_actions_layout.addWidget(select_all_button)
+        quantity_actions_layout.addWidget(clear_button)
+        quantity_actions_layout.addStretch(1)
+        layout.addWidget(quantity_actions)
+
+        self.quantity_container = QWidget(self)
+        self.quantity_layout = QVBoxLayout(self.quantity_container)
+        self.quantity_layout.setContentsMargins(0, 0, 0, 0)
+        self.quantity_layout.setSpacing(4)
+
+        for quantity_key, quantity_label in bdf_optional_quantity_choices():
+            checkbox = QCheckBox(quantity_label, self.quantity_container)
+            checkbox.setChecked(True)
+            self._quantity_checkboxes.append((checkbox, quantity_key))
+            self.quantity_layout.addWidget(checkbox)
+
+        self.quantity_layout.addStretch(1)
+
+        quantity_scroll_area = QScrollArea(self)
+        quantity_scroll_area.setWidgetResizable(True)
+        quantity_scroll_area.setMinimumHeight(220)
+        quantity_scroll_area.setWidget(self.quantity_container)
+        layout.addWidget(quantity_scroll_area, 2)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
@@ -161,6 +199,21 @@ class bdf_export_dialog(QDialog):
 
     def export_separate_measurements(self):
         return self.export_separate_checkbox.isChecked()
+
+    def selected_optional_quantity_keys(self):
+        return {
+            quantity_key
+            for checkbox, quantity_key in self._quantity_checkboxes
+            if checkbox.isChecked()
+        }
+
+    def select_all_optional_quantities(self):
+        for checkbox, _ in self._quantity_checkboxes:
+            checkbox.setChecked(True)
+
+    def clear_optional_quantities(self):
+        for checkbox, _ in self._quantity_checkboxes:
+            checkbox.setChecked(False)
 
     def output_directory(self) -> Path | None:
         raw_path = self.output_dir_edit.text().strip()
@@ -771,6 +824,7 @@ class main_window(QMainWindow):
                         filename_stem,
                         out_type,
                         dialog.export_separate_measurements(),
+                        dialog.selected_optional_quantity_keys(),
                     )
                 )
         except BdfExportError as exc:
