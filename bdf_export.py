@@ -4,6 +4,8 @@ from pathlib import Path
 import bdf
 import pandas as pd
 
+from measurement_data import measurement_dataset_views
+
 
 _GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$") # Matchar: mätningar + grippering
 
@@ -62,32 +64,46 @@ def export_measurement_to_bdf_files(
     export_type: str,
     export_separate: bool = False,
 ) -> list[Path]:
-    dataset = getattr(measurement, "dataset", None)
-    if not dataset:
+    dataset_views = measurement_dataset_views(measurement)
+    if not dataset_views:
         raise BdfExportError("Measurement does not contain any dataset arrays.")
 
-    groups = _measurement_groups(dataset)
-    if not groups:
-        raise BdfExportError("Measurement does not contain any exportable dataset groups.")
-
     written_paths = []
-    multiple_groups = len(groups) > 1
+    multiple_dataset_views = len(dataset_views) > 1
     dataframes = []
+    export_errors = []
 
-    for group in groups:
-        series = _extract_required_series(group)
-        dataframe = _build_dataframe(series)
-        dataframes.append(dataframe)
-        res = bdf.validate(dataframe, raise_on_error=True)
-        if not res["ok"]:
-            pass
-        stem = filename_stem
-        if multiple_groups:
-            stem = f"{filename_stem}_group_{group['id']}"
-        if export_separate:
-            output_path = _unique_output_path(output_dir, stem, export_type)
-            _write_dataframe(output_path, dataframe, export_type)
-            written_paths.append(output_path)
+    for dataset_view in dataset_views:
+        groups = _measurement_groups(dataset_view.dataset)
+        multiple_groups = len(groups) > 1
+        for group in groups:
+            try:
+                series = _extract_required_series(group)
+            except BdfExportError as exc:
+                if len(dataset_views) == 1:
+                    raise
+                export_errors.append(str(exc))
+                continue
+
+            dataframe = _build_dataframe(series)
+            dataframes.append(dataframe)
+            res = bdf.validate(dataframe, raise_on_error=True)
+            if not res["ok"]:
+                pass
+            stem = filename_stem
+            if multiple_dataset_views:
+                stem = f"{stem}_{_sanitize_stem(dataset_view.id)}"
+            if multiple_groups:
+                stem = f"{stem}_group_{group['id']}"
+            if export_separate:
+                output_path = _unique_output_path(output_dir, stem, export_type)
+                _write_dataframe(output_path, dataframe, export_type)
+                written_paths.append(output_path)
+
+    if not dataframes:
+        if export_errors:
+            raise BdfExportError(export_errors[0])
+        raise BdfExportError("Measurement does not contain any exportable dataset groups.")
 
     combined_dataframes = pd.concat(dataframes, ignore_index=True)
     total_path = _unique_output_path(output_dir, f"{filename_stem}_total", export_type)
@@ -249,6 +265,11 @@ def _unique_output_path(output_dir: Path, stem: str, export_type: str) -> Path:
         candidate = output_dir / f"{stem}_{suffix}.bdf.{export_type}"
         suffix += 1
     return candidate
+
+
+def _sanitize_stem(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
+    return cleaned or "dataset"
 
 
 def _normalize_text(value) -> str:

@@ -19,6 +19,8 @@ import pyqtgraph as pg
 import re
 import numpy as np
 
+from measurement_data import default_axis_indexes, measurement_arrays
+
 def _canonical_measurement_name(name):
     if name.startswith("Applied"):
         base_name = name.removeprefix("Applied")
@@ -58,8 +60,7 @@ class graph_widget(QWidget):
 
     def plot_measurement(self, measurement, selection=None):
         self.measurement = measurement
-        dataset = self.measurement.dataset
-        arrays = list(dataset.arrays())
+        arrays = measurement_arrays(measurement)
 
         if not arrays:
             self.plot_widget.clear()
@@ -89,8 +90,7 @@ class graph_widget(QWidget):
                 self._plot_dual_arrays_from_indexes(arrays, self.x_index, self.y_index, selection["right_y"])
                 return
         else:
-            self.x_index = 0
-            self.y_index = 1
+            self.x_index, self.y_index = default_axis_indexes(arrays)
 
         if self.x_index >= len(arrays):
             self.x_index = 0
@@ -427,7 +427,7 @@ class graph_panel(QFrame):
             )
             return
 
-        arrays = list(measurement.dataset.arrays())
+        arrays = measurement_arrays(measurement)
         if not arrays:
             QMessageBox.warning(
                 self,
