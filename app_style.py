@@ -64,7 +64,35 @@ QFrame#auroraOptionsCard {
 
 QFrame#auroraStepCard {
     border-color: #e4ebf2;
-    border-radius: 10px;
+    border-radius: 6px;
+}
+
+QFrame#auroraStepCard[stepType="tag"] {
+    border-left: 5px solid #64748b;
+}
+
+QFrame#auroraStepCard[stepType="open_circuit_voltage"] {
+    border-left: 5px solid #0f766e;
+}
+
+QFrame#auroraStepCard[stepType="constant_current"] {
+    border-left: 5px solid #2563eb;
+}
+
+QFrame#auroraStepCard[stepType="constant_voltage"] {
+    border-left: 5px solid #7c3aed;
+}
+
+QFrame#auroraStepCard[stepType="voltage_scan"] {
+    border-left: 5px solid #c2410c;
+}
+
+QFrame#auroraStepCard[stepType="impedance_spectroscopy"] {
+    border-left: 5px solid #be123c;
+}
+
+QFrame#auroraStepCard[stepType="loop"] {
+    border-left: 5px solid #ca8a04;
 }
 
 QLabel#graphPanelTitle {
@@ -93,16 +121,23 @@ QLabel#auroraFieldHint {
 QLabel#auroraStepIndex {
     background: #edf3f8;
     border: 0;
-    border-radius: 9px;
+    border-radius: 4px;
     color: #49657f;
     font-size: 11px;
     font-weight: 700;
-    padding: 2px 8px;
+    min-width: 22px;
+    padding: 2px 6px;
+}
+
+QLabel#auroraCompactFieldLabel {
+    color: #52606d;
+    font-size: 12px;
+    padding-left: 4px;
 }
 
 QPushButton#auroraStepAction,
 QPushButton#auroraAddStepButton {
-    padding: 5px 10px;
+    padding: 3px 8px;
 }
 
 QScrollArea#auroraStepsScroll {

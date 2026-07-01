@@ -110,6 +110,10 @@ class bdf_export_dialog(QDialog):
         self.file_type_combo_box.addItem("parquet", "parquet")
         layout.addWidget(self.file_type_combo_box)
 
+        self.export_separate_checkbox = QCheckBox("Export each measurement separately", self)
+        self.export_separate_checkbox.setChecked(False)
+        layout.addWidget(self.export_separate_checkbox)
+
         output_row = QWidget(self)
         output_row_layout = QGridLayout(output_row)
         output_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -154,6 +158,9 @@ class bdf_export_dialog(QDialog):
 
     def selected_type(self):
         return self.file_type_combo_box.currentData()
+
+    def export_separate_measurements(self):
+        return self.export_separate_checkbox.isChecked()
 
     def output_directory(self) -> Path | None:
         raw_path = self.output_dir_edit.text().strip()
@@ -762,7 +769,8 @@ class main_window(QMainWindow):
                         panel.graph.measurement,
                         output_dir,
                         filename_stem,
-                        out_type
+                        out_type,
+                        dialog.export_separate_measurements(),
                     )
                 )
         except BdfExportError as exc:

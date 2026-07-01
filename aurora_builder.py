@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -357,69 +358,72 @@ class AuroraStepCard(QFrame):
         super().__init__(parent)
         self.step_type = step_type
         self.field_widgets: dict[str, QWidget] = {}
+        self.field_labels: dict[QWidget, QLabel] = {}
+        self.field_position = 0
         self._expanded = True
         self.setObjectName("auroraStepCard")
+        self.setProperty("stepType", step_type)
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
 
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(8)
+        header_layout.setSpacing(6)
         layout.addLayout(header_layout)
-
-        title_column = QVBoxLayout()
-        title_column.setContentsMargins(0, 0, 0, 0)
-        title_column.setSpacing(2)
-        header_layout.addLayout(title_column, 1)
 
         self.index_label = QLabel(self)
         self.index_label.setObjectName("auroraStepIndex")
-        title_column.addWidget(self.index_label, 0)
+        header_layout.addWidget(self.index_label, 0)
 
         self.title_label = QLabel(self)
         self.title_label.setObjectName("auroraStepTitle")
-        title_column.addWidget(self.title_label)
+        header_layout.addWidget(self.title_label, 0)
 
         self.summary_label = QLabel(self)
         self.summary_label.setObjectName("auroraStepSummary")
-        self.summary_label.setWordWrap(True)
-        title_column.addWidget(self.summary_label)
+        self.summary_label.setWordWrap(False)
+        self.summary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        header_layout.addWidget(self.summary_label, 1)
 
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(6)
+        button_layout.setSpacing(4)
         header_layout.addLayout(button_layout)
 
         self.move_up_button = QPushButton("Up", self)
         self.move_up_button.setObjectName("auroraStepAction")
+        self.move_up_button.setFixedWidth(44)
         self.move_up_button.clicked.connect(lambda: self.move_up_requested.emit(self))
         button_layout.addWidget(self.move_up_button)
 
         self.move_down_button = QPushButton("Down", self)
         self.move_down_button.setObjectName("auroraStepAction")
+        self.move_down_button.setFixedWidth(58)
         self.move_down_button.clicked.connect(lambda: self.move_down_requested.emit(self))
         button_layout.addWidget(self.move_down_button)
 
         self.remove_button = QPushButton("Remove", self)
         self.remove_button.setObjectName("auroraStepAction")
+        self.remove_button.setFixedWidth(72)
         self.remove_button.clicked.connect(lambda: self.remove_requested.emit(self))
         button_layout.addWidget(self.remove_button)
 
         self.toggle_button = QPushButton(self)
         self.toggle_button.setObjectName("auroraStepAction")
         self.toggle_button.setText("Hide")
+        self.toggle_button.setFixedWidth(48)
         self.toggle_button.clicked.connect(lambda: self.expanded_requested.emit(self))
         button_layout.addWidget(self.toggle_button)
 
         self.form_widget = QWidget(self)
-        self.form_layout = QFormLayout(self.form_widget)
+        self.form_layout = QGridLayout(self.form_widget)
         self.form_layout.setContentsMargins(0, 0, 0, 0)
-        self.form_layout.setHorizontalSpacing(12)
-        self.form_layout.setVerticalSpacing(8)
+        self.form_layout.setHorizontalSpacing(8)
+        self.form_layout.setVerticalSpacing(4)
         layout.addWidget(self.form_widget)
 
         if self.step_type == "loop":
@@ -443,7 +447,7 @@ class AuroraStepCard(QFrame):
                 widget = QLineEdit(_as_text(raw_values.get(field.key, field.default)), self)
                 widget.textChanged.connect(self._on_field_changed)
             self.field_widgets[field.key] = widget
-            self.form_layout.addRow(field.label, widget)
+            self._add_compact_field(field.label, widget)
 
     def _build_loop_fields(self, raw_values: dict[str, Any]):
         self.loop_target_mode = QComboBox(self)
@@ -453,7 +457,7 @@ class AuroraStepCard(QFrame):
         self.loop_target_mode.setCurrentIndex(1 if raw_mode == "step" else 0)
         self.loop_target_mode.currentIndexChanged.connect(self._on_loop_mode_changed)
         self.loop_target_mode.currentIndexChanged.connect(self._on_field_changed)
-        self.form_layout.addRow("Loop target", self.loop_target_mode)
+        self._add_compact_field("Loop target", self.loop_target_mode)
 
         self.loop_target_tag = QComboBox(self)
         self.loop_target_tag.setEditable(True)
@@ -464,24 +468,37 @@ class AuroraStepCard(QFrame):
             self.loop_target_tag.setCurrentIndex(0)
             self.loop_target_tag.setEditText(initial_tag)
         self.loop_target_tag.currentTextChanged.connect(self._on_field_changed)
-        self.form_layout.addRow("Tag target", self.loop_target_tag)
+        self._add_compact_field("Tag target", self.loop_target_tag)
 
         self.loop_target_step = QLineEdit(_as_text(raw_values.get("loop_to_step", "")), self)
         self.loop_target_step.textChanged.connect(self._on_field_changed)
-        self.form_layout.addRow("Step target", self.loop_target_step)
+        self._add_compact_field("Step target", self.loop_target_step)
 
         self.loop_cycle_count = QLineEdit(_as_text(raw_values.get("cycle_count", "10")), self)
         self.loop_cycle_count.textChanged.connect(self._on_field_changed)
-        self.form_layout.addRow("Cycle count", self.loop_cycle_count)
+        self._add_compact_field("Cycle count", self.loop_cycle_count)
 
         self._on_loop_mode_changed()
+
+    def _add_compact_field(self, label_text: str, widget: QWidget):
+        label = QLabel(label_text, self.form_widget)
+        label.setObjectName("auroraCompactFieldLabel")
+        column_pair = self.field_position % 2
+        row = self.field_position // 2
+        label_column = column_pair * 2
+        field_column = label_column + 1
+        self.form_layout.addWidget(label, row, label_column)
+        self.form_layout.addWidget(widget, row, field_column)
+        self.form_layout.setColumnStretch(field_column, 1)
+        self.field_labels[widget] = label
+        self.field_position += 1
 
     def _on_loop_mode_changed(self):
         use_tag = self.loop_target_mode.currentData() == "tag"
         self.loop_target_tag.setVisible(use_tag)
         self.loop_target_step.setVisible(not use_tag)
-        tag_label = self.form_layout.labelForField(self.loop_target_tag)
-        step_label = self.form_layout.labelForField(self.loop_target_step)
+        tag_label = self.field_labels.get(self.loop_target_tag)
+        step_label = self.field_labels.get(self.loop_target_step)
         if tag_label is not None:
             tag_label.setVisible(use_tag)
         if step_label is not None:
@@ -528,8 +545,8 @@ class AuroraStepCard(QFrame):
 
     def update_header(self, index: int):
         label = "Loop" if self.step_type == "loop" else STEP_SPECS[self.step_type].label
-        self.index_label.setText(f"Step {index + 1}")
-        self.title_label.setText(f"{index + 1}. {label}")
+        self.index_label.setText(f"{index + 1}")
+        self.title_label.setText(label)
         self.summary_label.setText(self.summary_text())
 
     def set_expanded(self, expanded: bool):
@@ -571,10 +588,10 @@ class AuroraVisualBuilder(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        splitter = QSplitter(self)
-        splitter.setOrientation(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        layout.addWidget(splitter, 1)
+        self.splitter = QSplitter(self)
+        self.splitter.setOrientation(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.splitter, 1)
 
         self.sequence_frame = QFrame(self)
         self.sequence_frame.setObjectName("auroraSection")
@@ -607,6 +624,12 @@ class AuroraVisualBuilder(QWidget):
         self.add_step_button.clicked.connect(self.add_selected_step)
         sequence_header.addWidget(self.add_step_button)
 
+        self.focus_sequence_button = QPushButton("Focus", self.sequence_frame)
+        self.focus_sequence_button.setObjectName("auroraAddStepButton")
+        self.focus_sequence_button.setCheckable(True)
+        self.focus_sequence_button.toggled.connect(self.set_sequence_focus)
+        sequence_header.addWidget(self.focus_sequence_button)
+
         self.steps_scroll = QScrollArea(self.sequence_frame)
         self.steps_scroll.setObjectName("auroraStepsScroll")
         self.steps_scroll.setWidgetResizable(True)
@@ -620,14 +643,14 @@ class AuroraVisualBuilder(QWidget):
         self.steps_layout.addStretch(1)
         self.steps_scroll.setWidget(self.steps_container)
 
-        splitter.addWidget(self.sequence_frame)
+        self.splitter.addWidget(self.sequence_frame)
 
-        options_column = QWidget(self)
-        options_layout = QVBoxLayout(options_column)
+        self.options_column = QWidget(self)
+        options_layout = QVBoxLayout(self.options_column)
         options_layout.setContentsMargins(0, 0, 0, 0)
         options_layout.setSpacing(12)
 
-        self.context_widget_holder = QWidget(options_column)
+        self.context_widget_holder = QWidget(self.options_column)
         self.context_widget_layout = QVBoxLayout(self.context_widget_holder)
         self.context_widget_layout.setContentsMargins(0, 0, 0, 0)
         self.context_widget_layout.setSpacing(0)
@@ -644,11 +667,19 @@ class AuroraVisualBuilder(QWidget):
         options_layout.addWidget(self.record_frame)
         options_layout.addWidget(self.safety_frame)
         options_layout.addStretch(1)
-        splitter.addWidget(options_column)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        self.splitter.addWidget(self.options_column)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
 
         self.load_protocol_data(default_visual_builder_data())
+
+    def set_sequence_focus(self, focused: bool):
+        self.options_column.setVisible(not focused)
+        self.focus_sequence_button.setText("Show Settings" if focused else "Focus")
+        if focused:
+            self.splitter.setSizes([1, 0])
+        else:
+            self.splitter.setSizes([3, 2])
 
     def _build_section(
         self,

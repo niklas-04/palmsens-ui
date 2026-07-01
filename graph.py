@@ -7,133 +7,32 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QComboBox,
-    QCheckBox,
     QDialogButtonBox,
     QMessageBox,
     QFrame,
     QSizePolicy,
+    QCheckBox
 )
 from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QAction
 import pyqtgraph as pg
-import ps_helpers as pslib
 import re
+import numpy as np
 
+from measurement_data import default_axis_indexes, measurement_arrays
 
-_GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+)_(?P<group>\d+)$")
+def _canonical_measurement_name(name):
+    if name.startswith("Applied"):
+        base_name = name.removeprefix("Applied")
+        if base_name in {"Current", "Potential", "Voltage"}:
+            return base_name
+    return name
 
+def _get_unit(data_array, default = None):
+    return getattr(data_array, "unit", default)
 
-def _dataset_entries(dataset):
-    if hasattr(dataset, "items"):
-        try:
-            return [(str(key), data_array) for key, data_array in dataset.items()]
-        except TypeError:
-            pass
-
-    return [
-        (getattr(data_array, "name", f"array_{index}"), data_array)
-        for index, data_array in enumerate(dataset.arrays())
-    ]
-
-
-def _split_grouped_name(value):
-    match = _GROUPED_KEY_PATTERN.match(str(value))
-    if match:
-        return match.group("base"), match.group("group")
-    return str(value), None
-
-
-def _normalize_text(value):
-    if value is None:
-        return ""
-    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
-
-
-def _is_time_array(entry):
-    data_array = entry["array"]
-    texts = (
-        _normalize_text(entry["base_key"]),
-        _normalize_text(getattr(data_array, "name", "")),
-        _normalize_text(getattr(data_array, "type", "")),
-    )
-    unit = _normalize_text(getattr(data_array, "unit", ""))
-    return any(text.startswith("time") or "elapsedtime" in text for text in texts) or unit in {
-        "s",
-        "sec",
-        "second",
-        "seconds",
-        "ms",
-    }
-
-
-def _is_voltage_array(entry):
-    data_array = entry["array"]
-    texts = (
-        _normalize_text(entry["base_key"]),
-        _normalize_text(getattr(data_array, "name", "")),
-        _normalize_text(getattr(data_array, "type", "")),
-    )
-    unit = _normalize_text(getattr(data_array, "unit", ""))
-    return any("potential" in text or "voltage" in text for text in texts) or unit in {
-        "v",
-        "mv",
-    }
-
-
-def _voltage_preference(entry):
-    data_array = entry["array"]
-    text = _normalize_text(f"{entry['base_key']} {getattr(data_array, 'name', '')}")
-    if "wevsce" in text:
-        return 2
-    if "appliedpotential" in text or text.startswith("potential") or text.startswith("voltage"):
-        return 0
-    return 1
-
-
-def _measurement_segments(dataset):
-    groups = {}
-
-    for key, data_array in _dataset_entries(dataset):
-        base_key, group_id = _split_grouped_name(key)
-        if group_id is None:
-            base_key, group_id = _split_grouped_name(getattr(data_array, "name", key))
-        if group_id is None:
-            continue
-
-        group = groups.setdefault(group_id, {"id": group_id, "arrays": []})
-        group["arrays"].append(
-            {
-                "key": key,
-                "base_key": base_key,
-                "array": data_array,
-            }
-        )
-
-    segments = []
-    for group in groups.values():
-        time_entry = next((entry for entry in group["arrays"] if _is_time_array(entry)), None)
-        voltage_entries = [entry for entry in group["arrays"] if _is_voltage_array(entry)]
-        if time_entry is None or not voltage_entries:
-            continue
-
-        voltage_entry = sorted(voltage_entries, key=_voltage_preference)[0]
-        segments.append(
-            {
-                "id": group["id"],
-                "label": f"Measurement {group['id']}",
-                "time_array": time_entry["array"],
-                "voltage_array": voltage_entry["array"],
-            }
-        )
-
-    return sorted(
-        segments,
-        key=lambda segment: (
-            int(segment["id"]) if str(segment["id"]).isdigit() else float("inf"),
-            str(segment["id"]),
-        ),
-    )
-
+def _get_name(data_array, default = None):
+    return getattr(data_array, "name", default)
 
 class graph_widget(QWidget):
     def __init__(self):
@@ -143,8 +42,8 @@ class graph_widget(QWidget):
         self.x_index = None
         self.y_index = None
         self.live_curve = None
-        self.combine_measurements = True
-        self.selected_measurement_ids = ()
+        self.right_view = None
+        self.right_curve = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -155,151 +54,226 @@ class graph_widget(QWidget):
         self.plot_widget.getAxis("left").setPen("#7b8794")
         self.plot_widget.getAxis("bottom").setTextPen("#56616f")
         self.plot_widget.getAxis("left").setTextPen("#56616f")
+        self.plot_item = self.plot_widget.getPlotItem()
+        self._setup_right_axis()
         layout.addWidget(self.plot_widget)
 
-    def plot_measurement(
-        self,
-        measurement,
-        x_index=0,
-        y_index=1,
-        combine_measurements=None,
-        measurement_ids=None,
-    ):
+    def plot_measurement(self, measurement, selection=None):
         self.measurement = measurement
-        self.x_index = x_index
-        self.y_index = y_index
+        arrays = measurement_arrays(measurement)
 
-        dataset = self.measurement.dataset
-        arrays = list(dataset.arrays())
         if not arrays:
+            self.plot_widget.clear()
+            self.live_curve = None
             return
+
+        if selection:
+            if selection["grouped"]:
+                left_x, left_y = self._concat_grouped_arrays(arrays, selection["x"], selection["left_y"])
+                if selection["right_y"] is None:
+                    self._plot_arrays(left_x, left_y, selection["x"], selection["left_y"])
+                    return
+                right_x, right_y = self._concat_grouped_arrays(arrays, selection["x"], selection["right_y"])
+                self._plot_dual_arrays(
+                    left_x,
+                    left_y,
+                    right_x,
+                    right_y,
+                    selection["x"],
+                    selection["left_y"],
+                    selection["right_y"],
+                )
+                return
+            self.x_index = selection["x"]
+            self.y_index = selection["left_y"]
+            if selection["right_y"] is not None:
+                self._plot_dual_arrays_from_indexes(arrays, self.x_index, self.y_index, selection["right_y"])
+                return
+        else:
+            self.x_index, self.y_index = default_axis_indexes(arrays)
+
         if self.x_index >= len(arrays):
             self.x_index = 0
         if self.y_index >= len(arrays):
             self.y_index = min(1, len(arrays) - 1)
 
-        segments = _measurement_segments(dataset)
-        if combine_measurements is None:
-            combine_measurements = bool(segments)
-
-        if combine_measurements and segments:
-            selected_ids = tuple(measurement_ids or [segment["id"] for segment in segments])
-            selected_segments = [
-                segment
-                for segment in segments
-                if segment["id"] in selected_ids
-            ]
-            if selected_segments:
-                self.combine_measurements = True
-                self.selected_measurement_ids = selected_ids
-                self._plot_combined_measurements(selected_segments)
-                return
-
-        self.combine_measurements = False
-        self.selected_measurement_ids = ()
         x_array = arrays[self.x_index]
         y_array = arrays[self.y_index]
-        self._plot_arrays(x_array, y_array)
+        self._plot_arrays(x_array.to_numpy(),
+                          y_array.to_numpy(),
+                          f"{x_array.name}, {x_array.unit}",
+                          f"{y_array.name}, {y_array.unit}"
+                          )
 
     def plot_live_data(self, callback_data):
         self.measurement = None
         self.x_index = 0
         self.y_index = 1
-        self.combine_measurements = False
-        self.selected_measurement_ids = ()
-        self._plot_arrays(callback_data.x_array, callback_data.y_array)
+        self._plot_arrays(callback_data.x_array.to_numpy(),
+                          callback_data.y_array.to_numpy(),
+                          f"{callback_data.x_array.name}, {callback_data.x_array.unit}",
+                          f"{callback_data.y_array.name}, {callback_data.y_array.unit}"
+                          )
 
-    def _plot_combined_measurements(self, segments):
-        x_values = []
-        y_values = []
+    def _plot_arrays(self, x_array, y_array, x_label, y_label):
+        x_array = np.asarray(x_array).ravel()
+        y_array = np.asarray(y_array).ravel()
+        if x_array.shape != y_array.shape:
+            return
+        self.plot_widget.clear()
+        self._clear_right_axis()
+        self.plot_widget.setLabel("bottom", f"{x_label}")
+        self.plot_widget.setLabel("left", f"{y_label}")
+        pen = pg.mkPen(color="#2f6f9f", width=2)
+        self.live_curve = self.plot_widget.plot(x_array, y_array, pen=pen)
 
-        for segment in segments:
-            time_values = segment["time_array"].to_numpy()
-            voltage_values = segment["voltage_array"].to_numpy()
-            count = min(len(time_values), len(voltage_values))
-            x_values.extend(time_values[:count])
-            y_values.extend(voltage_values[:count])
+    def _plot_dual_arrays_from_indexes(self, arrays, x_index, left_y_index, right_y_index):
+        if x_index >= len(arrays):
+            x_index = 0
+        if left_y_index >= len(arrays):
+            left_y_index = min(1, len(arrays) - 1)
+        if right_y_index >= len(arrays):
+            right_y_index = None
 
-        if not x_values or not y_values:
-            self.plot_widget.clear()
-            self.live_curve = None
+        x_array = arrays[x_index]
+        left_y_array = arrays[left_y_index]
+        if right_y_index is None:
+            self._plot_arrays(
+                x_array.to_numpy(),
+                left_y_array.to_numpy(),
+                f"{x_array.name}, {x_array.unit}",
+                f"{left_y_array.name}, {left_y_array.unit}",
+            )
             return
 
-        first_time = segments[0]["time_array"]
-        first_voltage = segments[0]["voltage_array"]
-        self.plot_widget.setLabel("bottom", f"{first_time.name}, {first_time.unit}")
-        self.plot_widget.setLabel("left", f"{first_voltage.name}, {first_voltage.unit}")
-        pen = pg.mkPen(color="#2f6f9f", width=2)
+        right_y_array = arrays[right_y_index]
+        self._plot_dual_arrays(
+            x_array.to_numpy(),
+            left_y_array.to_numpy(),
+            x_array.to_numpy(),
+            right_y_array.to_numpy(),
+            f"{x_array.name}, {x_array.unit}",
+            f"{left_y_array.name}, {left_y_array.unit}",
+            f"{right_y_array.name}, {right_y_array.unit}",
+        )
+
+    def _plot_dual_arrays(self, left_x, left_y, right_x, right_y, x_label, left_label, right_label):
+        left_x = np.asarray(left_x).ravel()
+        left_y = np.asarray(left_y).ravel()
+        right_x = np.asarray(right_x).ravel()
+        right_y = np.asarray(right_y).ravel()
+        if left_x.shape != left_y.shape:
+            return
+        if right_x.shape != right_y.shape:
+            self._plot_arrays(left_x, left_y, x_label, left_label)
+            return
 
         self.plot_widget.clear()
-        self.live_curve = self.plot_widget.plot(x_values, y_values, pen=pen)
+        self._clear_right_axis()
+        self.plot_item.showAxis("right")
+        self.plot_item.setLabel("bottom", f"{x_label}")
+        self.plot_item.setLabel("left", f"{left_label}", color="#2f6f9f")
+        self.plot_item.setLabel("right", f"{right_label}", color="#7c3aed")
 
-    def _plot_arrays(self, x_array, y_array):
-        x_values = x_array.to_numpy()
-        y_values = y_array.to_numpy()
+        self.live_curve = self.plot_item.plot(
+            left_x,
+            left_y,
+            pen=pg.mkPen(color="#2f6f9f", width=2),
+        )
+        self.right_curve = pg.PlotDataItem(
+            right_x,
+            right_y,
+            pen=pg.mkPen(color="#7c3aed", width=2),
+        )
+        self.right_view.addItem(self.right_curve)
+        self._update_right_axis()
+        self.right_view.autoRange()
 
-        self.plot_widget.setLabel("bottom", f"{x_array.name}, {x_array.unit}")
-        self.plot_widget.setLabel("left", f"{y_array.name}, {y_array.unit}")
-        pen = pg.mkPen(color="#2f6f9f", width=2)
+    def _setup_right_axis(self):
+        self.right_view = pg.ViewBox()
+        self.plot_item.showAxis("right")
+        self.plot_item.scene().addItem(self.right_view)
+        self.plot_item.getAxis("right").linkToView(self.right_view)
+        self.right_view.setXLink(self.plot_item.vb)
+        self.plot_item.getAxis("right").setPen("#7b8794")
+        self.plot_item.getAxis("right").setTextPen("#56616f")
+        self.plot_item.vb.sigResized.connect(self._update_right_axis)
+        self.plot_item.hideAxis("right")
 
-        self.plot_widget.clear()
-        self.live_curve = self.plot_widget.plot(x_values, y_values, pen=pen)
+    def _clear_right_axis(self):
+        if self.right_view is not None:
+            self.right_view.clear()
+        self.right_curve = None
+        self.plot_item.hideAxis("right")
+
+    def _update_right_axis(self):
+        if self.right_view is None:
+            return
+        self.right_view.setGeometry(self.plot_item.vb.sceneBoundingRect())
+        self.right_view.linkedViewChanged(self.plot_item.vb, self.right_view.XAxis)
+    
+    @staticmethod
+    def _concat_grouped_arrays(arrays, name_arr_1, name_arr_2):
+        pattern = re.compile(r"^(?P<measurement>[A-Za-z_]+?)(?P<measurement_number>\d+)_(?P<group>\d+)$")
+
+        groups = {}
+        for arr in arrays:
+            name = _get_name(arr, "")
+            match = pattern.match(name)
+            if not match:
+                continue
+
+            measurement = _canonical_measurement_name(match.group("measurement"))
+            if measurement not in {name_arr_1, name_arr_2}:
+                continue
+
+            group = int(match.group("group"))
+            grouped_arrays = groups.setdefault(group, {})
+            if measurement not in grouped_arrays or not match.group("measurement").startswith("Applied"):
+                grouped_arrays[measurement] = arr
+
+        concat_arr1 = []
+        concat_arr2 = []
+        for group in sorted(groups):
+            grouped_arrays = groups[group]
+            if name_arr_1 not in grouped_arrays or name_arr_2 not in grouped_arrays:
+                continue
+            x_values = np.asarray(grouped_arrays[name_arr_1].to_numpy()).ravel()
+            y_values = np.asarray(grouped_arrays[name_arr_2].to_numpy()).ravel()
+            if x_values.shape != y_values.shape:
+                continue
+            concat_arr1.extend(x_values)
+            concat_arr2.extend(y_values)
+
+        return np.asarray(concat_arr1), np.asarray(concat_arr2)
+        
+        
+        
 
 
 class axis_selection_dialog(QDialog):
-    def __init__(
-        self,
-        arrays,
-        segments=(),
-        current_x=0,
-        current_y=1,
-        combine_measurements=True,
-        selected_measurement_ids=(),
-        parent=None,
-    ):
+    def __init__(self, arrays, current_x=0, current_y=1, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Axes")
-        self.segments = list(segments)
-        self.measurement_checks = {}
 
         layout = QFormLayout(self)
-        self.combine_check = QCheckBox("Combine measurement time/voltage arrays", self)
         self.x_combo = QComboBox(self)
-        self.y_combo = QComboBox(self)
+        self.left_y_combo = QComboBox(self)
+        self.right_y_combo = QComboBox(self)
+        self.checkbox = QCheckBox(self)
+        self.arrays = arrays
+        self.current_x = current_x
+        self.current_y = current_y
 
-        for index, data_array in enumerate(arrays):
-            label = self._format_array_label(index, data_array)
-            self.x_combo.addItem(label, index)
-            self.y_combo.addItem(label, index)
-
-        self.x_combo.setCurrentIndex(current_x)
-        self.y_combo.setCurrentIndex(current_y)
-
-        if self.segments:
-            self.combine_check.setChecked(combine_measurements)
-            self.combine_check.toggled.connect(self._update_axis_controls)
-            layout.addRow("View", self.combine_check)
-
-            selected_ids = set(selected_measurement_ids)
-            if not selected_ids:
-                selected_ids = {segment["id"] for segment in self.segments}
-
-            measurement_widget = QWidget(self)
-            measurement_layout = QVBoxLayout(measurement_widget)
-            measurement_layout.setContentsMargins(0, 0, 0, 0)
-            measurement_layout.setSpacing(4)
-
-            for segment in self.segments:
-                checkbox = QCheckBox(segment["label"], measurement_widget)
-                checkbox.setChecked(segment["id"] in selected_ids)
-                self.measurement_checks[segment["id"]] = checkbox
-                measurement_layout.addWidget(checkbox)
-
-            layout.addRow("Measurements", measurement_widget)
+        self.rebuild_axis_choice() 
+        
+        self.checkbox.toggled.connect(self.rebuild_axis_choice)
 
         layout.addRow("X axis", self.x_combo)
-        layout.addRow("Y axis", self.y_combo)
-        self._update_axis_controls()
+        layout.addRow("Left Y axis", self.left_y_combo)
+        layout.addRow("Right Y axis", self.right_y_combo)
+        layout.addRow("Group", self.checkbox)
+        
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -309,41 +283,51 @@ class axis_selection_dialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def rebuild_axis_choice(self):
+        self.x_combo.clear()
+        self.left_y_combo.clear()
+        self.right_y_combo.clear()
+        
+        if self.checkbox.isChecked():
+            measurement_names = self._unique_measurements()
+            self.right_y_combo.addItem("None", None)
+            for meas_name in measurement_names:
+                self.x_combo.addItem(meas_name, meas_name)
+                self.left_y_combo.addItem(meas_name, meas_name)
+                self.right_y_combo.addItem(meas_name, meas_name)
+            self._set_combo_to_data(self.x_combo, "Time")
+            self._set_combo_to_data(self.left_y_combo, "Potential")
+            self._set_combo_to_data(self.right_y_combo, "Current")
+        else:
+            self.right_y_combo.addItem("None", None)
+            for index, data_array in enumerate(self.arrays):
+                label = self._format_array_label(index, data_array)
+                self.x_combo.addItem(label, index)
+                self.left_y_combo.addItem(label, index)
+                self.right_y_combo.addItem(label, index)
+            self.x_combo.setCurrentIndex(self.current_x)
+            self.left_y_combo.setCurrentIndex(self.current_y)
+        
     def selected_axes(self):
-        selected_measurement_ids = tuple(
-            measurement_id
-            for measurement_id, checkbox in self.measurement_checks.items()
-            if checkbox.isChecked()
-        )
-        return (
-            self.x_combo.currentData(),
-            self.y_combo.currentData(),
-            self.combine_check.isChecked() and bool(self.segments),
-            selected_measurement_ids,
-        )
+        return {
+            "grouped": self.checkbox.isChecked(),
+            "x": self.x_combo.currentData(),
+            "left_y": self.left_y_combo.currentData(),
+            "right_y": self.right_y_combo.currentData(),
+        }
 
-    def accept(self):
-        if self.combine_check.isChecked() and self.segments:
-            if not any(checkbox.isChecked() for checkbox in self.measurement_checks.values()):
-                QMessageBox.warning(
-                    self,
-                    "No measurements selected",
-                    "Select at least one measurement to plot.",
-                )
-                return
-        super().accept()
-
-    def _update_axis_controls(self):
-        use_combined = self.combine_check.isChecked() and bool(self.segments)
-        self.x_combo.setEnabled(not use_combined)
-        self.y_combo.setEnabled(not use_combined)
-        for checkbox in self.measurement_checks.values():
-            checkbox.setEnabled(use_combined)
+    @staticmethod
+    def _set_combo_to_data(combo, value):
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        elif combo.count():
+            combo.setCurrentIndex(0)
 
     @staticmethod
     def _format_array_label(index, data_array):
-        name = getattr(data_array, "name", f"array_{index}")
-        unit = getattr(data_array, "unit", "")
+        name = _get_name(data_array, f"array_{index}")
+        unit = _get_unit(data_array, "")
         array_type = getattr(data_array, "type", "")
 
         details = [detail for detail in (array_type, unit) if detail]
@@ -351,9 +335,20 @@ class axis_selection_dialog(QDialog):
             return f"{index}: {name} ({', '.join(details)})"
         return f"{index}: {name}"
 
+    def _unique_measurements(self):
+        pattern = re.compile(r"^(?P<measurement>[A-Za-z_]+?)(?P<measurement_number>\d+)_(?P<group>\d+)$")
+        names = []
+
+        for data_array in self.arrays:
+            name = _get_name(data_array, "")
+            match = pattern.match(name)
+            if match:
+                names.append(_canonical_measurement_name(match.group("measurement")))
+
+        return sorted(set(names))
 
 class graph_panel(QFrame):
-    run_requested = Signal() # Dessa två signaler kan användas senare i main fönstret för att intiera/stoppa measurement
+    run_requested = Signal()
     stop_requested = Signal()
     expand_requested = Signal(bool)
 
@@ -374,7 +369,7 @@ class graph_panel(QFrame):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
-        
+
         self.title_label = QLabel(self.base_title)
         self.title_label.setObjectName("graphPanelTitle")
         header_layout.addWidget(self.title_label, 1)
@@ -432,7 +427,7 @@ class graph_panel(QFrame):
             )
             return
 
-        arrays = list(measurement.dataset.arrays())
+        arrays = measurement_arrays(measurement)
         if not arrays:
             QMessageBox.warning(
                 self,
@@ -441,25 +436,10 @@ class graph_panel(QFrame):
             )
             return
 
-        current_x = self.graph.x_index if self.graph.x_index is not None else 0
-        current_y = self.graph.y_index if self.graph.y_index is not None else min(1, len(arrays) - 1)
-        segments = _measurement_segments(measurement.dataset)
+        current_x = self.graph.x_index if isinstance(self.graph.x_index, int) else 0
+        current_y = self.graph.y_index if isinstance(self.graph.y_index, int) else min(1, len(arrays) - 1)
 
-        dialog = axis_selection_dialog(
-            arrays,
-            segments=segments,
-            current_x=current_x,
-            current_y=current_y,
-            combine_measurements=self.graph.combine_measurements,
-            selected_measurement_ids=self.graph.selected_measurement_ids,
-            parent=self,
-        )
+        dialog = axis_selection_dialog(arrays, current_x=current_x, current_y=current_y, parent=self)
         if dialog.exec():
-            x_index, y_index, combine_measurements, measurement_ids = dialog.selected_axes()
-            self.graph.plot_measurement(
-                measurement,
-                x_index=x_index,
-                y_index=y_index,
-                combine_measurements=combine_measurements,
-                measurement_ids=measurement_ids,
-            )
+            selection = dialog.selected_axes()
+            self.graph.plot_measurement(measurement, selection=selection)
