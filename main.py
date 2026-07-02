@@ -1,4 +1,5 @@
 import sys
+from datetime import date
 from pathlib import Path
 
 import pypalmsens as ps
@@ -89,7 +90,7 @@ class bdf_export_dialog(QDialog):
         super().__init__(parent)
         self.file_type = "csv"
         self.setWindowTitle("Export BDF")
-        self.resize(640, 680)
+        self.resize(640, 480)
         self._checkboxes: list[tuple[QCheckBox, object]] = []
         self._quantity_checkboxes: list[tuple[QCheckBox, str]] = []
 
@@ -113,6 +114,9 @@ class bdf_export_dialog(QDialog):
         self.file_type_combo_box.addItem("csv", "csv")
         self.file_type_combo_box.addItem("parquet", "parquet")
 
+        self.cell_name_edit = QLineEdit(self)
+        self.cell_name_edit.setText("A0001")
+
         self.export_separate_checkbox = QCheckBox("Export each measurement separately", self)
         self.export_separate_checkbox.setChecked(False)
 
@@ -123,10 +127,12 @@ class bdf_export_dialog(QDialog):
         output_options_layout.setVerticalSpacing(8)
         output_options_layout.addWidget(QLabel("Format", output_options), 0, 0)
         output_options_layout.addWidget(self.file_type_combo_box, 0, 1, 1, 2)
-        output_options_layout.addWidget(self.export_separate_checkbox, 1, 1, 1, 2)
-        output_options_layout.addWidget(QLabel("Folder", output_options), 2, 0)
-        output_options_layout.addWidget(self.output_dir_edit, 2, 1)
-        output_options_layout.addWidget(browse_button, 2, 2)
+        output_options_layout.addWidget(QLabel("Cell name", output_options), 1, 0)
+        output_options_layout.addWidget(self.cell_name_edit, 1, 1, 1, 2)
+        output_options_layout.addWidget(self.export_separate_checkbox, 2, 1, 1, 2)
+        output_options_layout.addWidget(QLabel("Folder", output_options), 3, 0)
+        output_options_layout.addWidget(self.output_dir_edit, 3, 1)
+        output_options_layout.addWidget(browse_button, 3, 2)
         output_options_layout.setColumnStretch(1, 1)
         layout.addWidget(output_options)
 
@@ -153,14 +159,24 @@ class bdf_export_dialog(QDialog):
         channel_scroll_area.setWidget(self.checkbox_container)
         layout.addWidget(channel_scroll_area)
 
-        quantity_header = QLabel("Additional BDF quantities", self)
-        layout.addWidget(quantity_header)
+        self.quantity_toggle_button = QToolButton(self)
+        self.quantity_toggle_button.setCheckable(True)
+        self.quantity_toggle_button.setChecked(False)
+        self.quantity_toggle_button.setArrowType(Qt.ArrowType.RightArrow)
+        self.quantity_toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.quantity_toggle_button.toggled.connect(self.set_quantity_options_visible)
+        layout.addWidget(self.quantity_toggle_button)
+
+        self.quantity_options_widget = QWidget(self)
+        quantity_options_layout = QVBoxLayout(self.quantity_options_widget)
+        quantity_options_layout.setContentsMargins(0, 0, 0, 0)
+        quantity_options_layout.setSpacing(8)
 
         self.quantity_search_edit = QLineEdit(self)
         self.quantity_search_edit.setPlaceholderText("Search optional quantities")
         self.quantity_search_edit.setClearButtonEnabled(True)
         self.quantity_search_edit.textChanged.connect(self.filter_optional_quantities)
-        layout.addWidget(self.quantity_search_edit)
+        quantity_options_layout.addWidget(self.quantity_search_edit)
 
         quantity_actions = QWidget(self)
         quantity_actions_layout = QHBoxLayout(quantity_actions)
@@ -174,7 +190,7 @@ class bdf_export_dialog(QDialog):
         quantity_actions_layout.addWidget(select_all_button)
         quantity_actions_layout.addWidget(clear_button)
         quantity_actions_layout.addStretch(1)
-        layout.addWidget(quantity_actions)
+        quantity_options_layout.addWidget(quantity_actions)
 
         self.quantity_container = QWidget(self)
         self.quantity_layout = QVBoxLayout(self.quantity_container)
@@ -184,6 +200,7 @@ class bdf_export_dialog(QDialog):
         for quantity_key, quantity_label in bdf_optional_quantity_choices():
             checkbox = QCheckBox(quantity_label, self.quantity_container)
             checkbox.setChecked(True)
+            checkbox.stateChanged.connect(self.update_quantity_toggle_text)
             self._quantity_checkboxes.append((checkbox, quantity_key))
             self.quantity_layout.addWidget(checkbox)
 
@@ -196,7 +213,10 @@ class bdf_export_dialog(QDialog):
         quantity_scroll_area.setWidgetResizable(True)
         quantity_scroll_area.setMinimumHeight(280)
         quantity_scroll_area.setWidget(self.quantity_container)
-        layout.addWidget(quantity_scroll_area, 1)
+        quantity_options_layout.addWidget(quantity_scroll_area, 1)
+        self.quantity_options_widget.setVisible(False)
+        layout.addWidget(self.quantity_options_widget)
+        self.update_quantity_toggle_text()
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -223,6 +243,9 @@ class bdf_export_dialog(QDialog):
     def export_separate_measurements(self):
         return self.export_separate_checkbox.isChecked()
 
+    def cell_name(self):
+        return self.cell_name_edit.text().strip() or "A0001"
+
     def selected_optional_quantity_keys(self):
         return {
             quantity_key
@@ -241,13 +264,33 @@ class bdf_export_dialog(QDialog):
                 visible_count += 1
         self.no_quantity_matches_label.setVisible(visible_count == 0)
 
+    def set_quantity_options_visible(self, is_visible: bool):
+        self.quantity_options_widget.setVisible(is_visible)
+        arrow_type = Qt.ArrowType.DownArrow if is_visible else Qt.ArrowType.RightArrow
+        self.quantity_toggle_button.setArrowType(arrow_type)
+        if is_visible:
+            self.resize(self.width(), max(self.height(), 720))
+        else:
+            self.adjustSize()
+
     def select_all_optional_quantities(self):
         for checkbox, _ in self._quantity_checkboxes:
             checkbox.setChecked(True)
+        self.update_quantity_toggle_text()
 
     def clear_optional_quantities(self):
         for checkbox, _ in self._quantity_checkboxes:
             checkbox.setChecked(False)
+        self.update_quantity_toggle_text()
+
+    def update_quantity_toggle_text(self):
+        selected_count = len(self.selected_optional_quantity_keys())
+        total_count = len(self._quantity_checkboxes)
+        if selected_count == total_count:
+            summary = "all selected"
+        else:
+            summary = f"{selected_count} selected"
+        self.quantity_toggle_button.setText(f"Additional BDF quantities ({summary})")
 
     def output_directory(self) -> Path | None:
         raw_path = self.output_dir_edit.text().strip()
@@ -853,9 +896,19 @@ class main_window(QMainWindow):
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             written_files = []
-            for panel in dialog.selected_panels():
-                filename_stem = self._panel_export_stem(panel)
-                out_type = dialog.selected_type()
+            selected_panels = dialog.selected_panels()
+            cell_name = dialog.cell_name()
+            out_type = dialog.selected_type()
+            used_sequence_numbers = set()
+            for panel in selected_panels:
+                sequence_number = self._next_bdf_sequence_number(
+                    output_dir,
+                    cell_name,
+                    out_type,
+                    used_sequence_numbers,
+                )
+                used_sequence_numbers.add(sequence_number)
+                filename_stem = self._bdf_export_stem(cell_name, sequence_number)
                 written_files.extend(
                     export_measurement_to_bdf_files(
                         panel.graph.measurement,
@@ -1075,6 +1128,41 @@ class main_window(QMainWindow):
         cleaned = "".join(character if character.isalnum() else "_" for character in name.strip())
         cleaned = cleaned.strip("_")
         return cleaned or "channel"
+
+    @classmethod
+    def _bdf_export_stem(cls, cell_name: str, sequence_number: int) -> str:
+        sanitized_cell_name = cls._sanitize_export_name(cell_name)
+        export_date = date.today().strftime("%Y%m%d")
+        return f"UU__{sanitized_cell_name}__{export_date}_{sequence_number:03d}"
+
+    @classmethod
+    def _next_bdf_sequence_number(
+        cls,
+        output_dir: Path,
+        cell_name: str,
+        export_type: str,
+        used_sequence_numbers: set[int],
+    ) -> int:
+        sequence_number = 1
+        while sequence_number in used_sequence_numbers or cls._bdf_sequence_exists(
+            output_dir,
+            cell_name,
+            sequence_number,
+            export_type,
+        ):
+            sequence_number += 1
+        return sequence_number
+
+    @classmethod
+    def _bdf_sequence_exists(
+        cls,
+        output_dir: Path,
+        cell_name: str,
+        sequence_number: int,
+        export_type: str,
+    ) -> bool:
+        stem = cls._bdf_export_stem(cell_name, sequence_number)
+        return any(output_dir.glob(f"{stem}*.{export_type}"))
 
     def _panel_export_stem(self, panel: graph_panel) -> str:
         instrument = panel.instrument

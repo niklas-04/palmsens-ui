@@ -321,7 +321,8 @@ def export_measurement_to_bdf_files(
         raise BdfExportError("Measurement does not contain any exportable dataset groups.")
 
     combined_dataframes = pd.concat(dataframes, ignore_index=True)
-    total_path = _unique_output_path(output_dir, f"{filename_stem}_total", export_type)
+    combined_stem = f"{filename_stem}_total" if export_separate else filename_stem
+    total_path = _unique_output_path(output_dir, combined_stem, export_type)
     _write_dataframe(total_path, combined_dataframes, export_type)
     written_paths.append(total_path)
     return written_paths
@@ -826,10 +827,10 @@ def _write_dataframe(path: Path, dataframe: pd.DataFrame, export_type: str):
 
 
 def _unique_output_path(output_dir: Path, stem: str, export_type: str) -> Path:
-    candidate = output_dir / f"{stem}.bdf.{export_type}"
+    candidate = output_dir / f"{stem}.{export_type}"
     suffix = 2
     while candidate.exists():
-        candidate = output_dir / f"{stem}_{suffix}.bdf.{export_type}"
+        candidate = output_dir / f"{stem}_{suffix}.{export_type}"
         suffix += 1
     return candidate
 

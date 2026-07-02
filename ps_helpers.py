@@ -55,7 +55,10 @@ def _channel_sort_key(instrument: ps.Instrument):
     return 10**9 # stort tal bara för att sortera sist
 
 
-def find_devices():
+def find_devices(debug_mode: bool = False):
+    if debug_mode:
+        return [create_mock_device("test", 9)]
+
     instruments = ps.discover(ignore_errors=True)
     if not instruments:
         return []
