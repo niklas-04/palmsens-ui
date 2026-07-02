@@ -9,8 +9,8 @@ from aurora_methods import (
     AURORA_DEVICE_MEASUREMENT_TYPES,
     AURORA_DEVICE_OPTIONS,
     AuroraExportSettings,
+    build_aurora_stepwise_method,
     load_aurora_package,
-    render_aurora_package,
 )
 
 from bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
@@ -600,9 +600,11 @@ class method_configuration_dialog(QDialog):
                 "Update PyPalmSens before running imported  packages."
             )
 
-        methodscript = render_aurora_package(self.imported_package, self.build_aurora_export_settings())
-        self.method_label = self.imported_package.name
-        return ps.MethodScript(script=methodscript)
+        self.method_label = f"{self.imported_package.name} (step-wise)"
+        return build_aurora_stepwise_method(
+            self.imported_package,
+            self.build_aurora_export_settings(),
+        )
 
     def load_aurora_package_file(self):
         if self.selected_run_mode() != "aurora_package":

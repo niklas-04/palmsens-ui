@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pypalmsens as ps
 
+from measurement_data import LogicalMeasurementRun
+
 
 @dataclass(slots=True)
 class mock_instrument:
@@ -82,8 +84,18 @@ def find_devices(debug_mode: bool = False):
 
 
 def save_session(path: str | Path, session):
-    ps.save_session_file(path, session)
+    ps.save_session_file(path, _pypalmsens_session_measurements(session))
 
 
 def load_session(path: str | Path):
     return ps.load_session_file(path)
+
+
+def _pypalmsens_session_measurements(session):
+    measurements = []
+    for measurement in session:
+        if isinstance(measurement, LogicalMeasurementRun):
+            measurements.extend(measurement.measurements)
+        else:
+            measurements.append(measurement)
+    return measurements
