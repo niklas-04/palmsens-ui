@@ -144,13 +144,40 @@ class graph_widget(QWidget):
 
     def plot_live_data(self, callback_data):
         self.measurement = None
-        self.x_index = 0
-        self.y_index = 1
-        self._plot_arrays(callback_data.x_array.to_numpy(),
-                          callback_data.y_array.to_numpy(),
-                          f"{callback_data.x_array.name}, {callback_data.x_array.unit}",
-                          f"{callback_data.y_array.name}, {callback_data.y_array.unit}"
-                          )
+        x_array = getattr(callback_data, "x_array", None)
+        y_array = getattr(callback_data, "y_array", None)
+        if x_array is not None and y_array is not None:
+            self.dataset_view_id = None
+            self.x_index = 0
+            self.y_index = 1
+            self._plot_arrays(
+                x_array.to_numpy(),
+                y_array.to_numpy(),
+                f"{x_array.name}, {x_array.unit}",
+                f"{y_array.name}, {y_array.unit}",
+            )
+            return
+
+        dataset = getattr(callback_data, "data", None)
+        arrays = dataset_arrays(dataset) if dataset is not None else []
+        if not arrays:
+            return
+
+        self.dataset_view_id = "eis_live"
+        self.x_index, self.y_index = default_axis_indexes(arrays)
+        if self.x_index >= len(arrays):
+            self.x_index = 0
+        if self.y_index >= len(arrays):
+            self.y_index = min(1, len(arrays) - 1)
+
+        x_array = arrays[self.x_index]
+        y_array = arrays[self.y_index]
+        self._plot_arrays(
+            x_array.to_numpy(),
+            y_array.to_numpy(),
+            f"{x_array.name}, {x_array.unit}",
+            f"{y_array.name}, {y_array.unit}",
+        )
 
     def _plot_arrays(self, x_array, y_array, x_label, y_label):
         x_array = np.asarray(x_array).ravel()
@@ -508,7 +535,7 @@ class graph_panel(QFrame):
         self.expand_action.blockSignals(False)
 
     def edit_axes(self):
-            measurement = self.graph.measurement
+        measurement = self.graph.measurement
         if measurement is None:
             QMessageBox.information(
                 self,
