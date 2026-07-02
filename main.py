@@ -14,7 +14,7 @@ from aurora_methods import (
 )
 
 from bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
-from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread, QProcess
+from PySide6.QtCore import QObject, QSize, Signal, Slot, Qt, QThread, QProcess
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -1127,7 +1127,7 @@ class main_window(QMainWindow):
         self.stopping_panels.add(panel)
         panel.set_status_text("Stopping")
         self.statusBar().showMessage(f"Stopping measurement on {panel.base_title}...", 0)
-        QMetaObject.invokeMethod(worker, "abort", Qt.ConnectionType.QueuedConnection)
+        worker.abort()
 
     def handle_worker_progress(self, worker, callback_data):
         panel = self.worker_panels.get(worker)
@@ -1165,6 +1165,13 @@ class main_window(QMainWindow):
             self.worker_method_labels.pop(worker_to_remove, None)
 
     def on_measurement_finished(self, panel: graph_panel, method_label: str, measurement):
+        if panel in self.stopping_panels:
+            self.stopping_panels.discard(panel)
+            panel.graph.plot_measurement(measurement)
+            panel.set_status_text(None)
+            self.statusBar().showMessage(f"Stopped measurement on {panel.base_title}.", 5000)
+            return
+
         self.stopping_panels.discard(panel)
         panel.graph.plot_measurement(measurement)
         panel.set_status_text(None)
