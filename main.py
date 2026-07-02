@@ -89,11 +89,13 @@ class bdf_export_dialog(QDialog):
         super().__init__(parent)
         self.file_type = "csv"
         self.setWindowTitle("Export BDF")
-        self.resize(560, 640)
+        self.resize(640, 680)
         self._checkboxes: list[tuple[QCheckBox, object]] = []
         self._quantity_checkboxes: list[tuple[QCheckBox, str]] = []
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 14)
+        layout.setSpacing(10)
 
         info_label = QLabel(
             "Select the channel measurements to export as BDF files. "
@@ -110,20 +112,26 @@ class bdf_export_dialog(QDialog):
         self.file_type_combo_box = QComboBox(self)
         self.file_type_combo_box.addItem("csv", "csv")
         self.file_type_combo_box.addItem("parquet", "parquet")
-        layout.addWidget(self.file_type_combo_box)
 
         self.export_separate_checkbox = QCheckBox("Export each measurement separately", self)
         self.export_separate_checkbox.setChecked(False)
-        layout.addWidget(self.export_separate_checkbox)
 
-        output_row = QWidget(self)
-        output_row_layout = QGridLayout(output_row)
-        output_row_layout.setContentsMargins(0, 0, 0, 0)
-        output_row_layout.setHorizontalSpacing(8)
-        output_row_layout.addWidget(self.output_dir_edit, 0, 0)
-        output_row_layout.addWidget(browse_button, 0, 1)
-        output_row_layout.setColumnStretch(0, 1)
-        layout.addWidget(output_row)
+        output_options = QWidget(self)
+        output_options_layout = QGridLayout(output_options)
+        output_options_layout.setContentsMargins(0, 0, 0, 0)
+        output_options_layout.setHorizontalSpacing(8)
+        output_options_layout.setVerticalSpacing(8)
+        output_options_layout.addWidget(QLabel("Format", output_options), 0, 0)
+        output_options_layout.addWidget(self.file_type_combo_box, 0, 1, 1, 2)
+        output_options_layout.addWidget(self.export_separate_checkbox, 1, 1, 1, 2)
+        output_options_layout.addWidget(QLabel("Folder", output_options), 2, 0)
+        output_options_layout.addWidget(self.output_dir_edit, 2, 1)
+        output_options_layout.addWidget(browse_button, 2, 2)
+        output_options_layout.setColumnStretch(1, 1)
+        layout.addWidget(output_options)
+
+        channel_header = QLabel("Channels", self)
+        layout.addWidget(channel_header)
 
         self.checkbox_container = QWidget(self)
         self.checkbox_layout = QVBoxLayout(self.checkbox_container)
@@ -137,10 +145,22 @@ class bdf_export_dialog(QDialog):
             self.checkbox_layout.addWidget(checkbox)
 
         self.checkbox_layout.addStretch(1)
-        layout.addWidget(self.checkbox_container, 1)
+
+        channel_scroll_area = QScrollArea(self)
+        channel_scroll_area.setWidgetResizable(True)
+        channel_scroll_area.setMinimumHeight(72)
+        channel_scroll_area.setMaximumHeight(132)
+        channel_scroll_area.setWidget(self.checkbox_container)
+        layout.addWidget(channel_scroll_area)
 
         quantity_header = QLabel("Additional BDF quantities", self)
         layout.addWidget(quantity_header)
+
+        self.quantity_search_edit = QLineEdit(self)
+        self.quantity_search_edit.setPlaceholderText("Search optional quantities")
+        self.quantity_search_edit.setClearButtonEnabled(True)
+        self.quantity_search_edit.textChanged.connect(self.filter_optional_quantities)
+        layout.addWidget(self.quantity_search_edit)
 
         quantity_actions = QWidget(self)
         quantity_actions_layout = QHBoxLayout(quantity_actions)
@@ -167,13 +187,16 @@ class bdf_export_dialog(QDialog):
             self._quantity_checkboxes.append((checkbox, quantity_key))
             self.quantity_layout.addWidget(checkbox)
 
+        self.no_quantity_matches_label = QLabel("No matching quantities", self.quantity_container)
+        self.no_quantity_matches_label.setVisible(False)
+        self.quantity_layout.addWidget(self.no_quantity_matches_label)
         self.quantity_layout.addStretch(1)
 
         quantity_scroll_area = QScrollArea(self)
         quantity_scroll_area.setWidgetResizable(True)
-        quantity_scroll_area.setMinimumHeight(220)
+        quantity_scroll_area.setMinimumHeight(280)
         quantity_scroll_area.setWidget(self.quantity_container)
-        layout.addWidget(quantity_scroll_area, 2)
+        layout.addWidget(quantity_scroll_area, 1)
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -206,6 +229,17 @@ class bdf_export_dialog(QDialog):
             for checkbox, quantity_key in self._quantity_checkboxes
             if checkbox.isChecked()
         }
+
+    def filter_optional_quantities(self, search_text: str):
+        normalized_search = search_text.strip().casefold()
+        visible_count = 0
+        for checkbox, quantity_key in self._quantity_checkboxes:
+            searchable_text = f"{checkbox.text()} {quantity_key}".casefold()
+            is_visible = not normalized_search or normalized_search in searchable_text
+            checkbox.setVisible(is_visible)
+            if is_visible:
+                visible_count += 1
+        self.no_quantity_matches_label.setVisible(visible_count == 0)
 
     def select_all_optional_quantities(self):
         for checkbox, _ in self._quantity_checkboxes:
@@ -628,6 +662,11 @@ class main_window(QMainWindow):
         self.disconnect_action.triggered.connect(self.request_disconnect)
         toolbar.addAction(self.disconnect_action)
 
+        self.debug_device_action = QAction("Debug Device", self)
+        self.debug_device_action.setCheckable(True)
+        self.debug_device_action.setStatusTip("Use a mock 9-channel test device when scanning")
+        toolbar.addAction(self.debug_device_action)
+
         self.aurora_builder_action = QAction("Aurora Builder", self)
         self.aurora_builder_action.setStatusTip("Open the standalone Aurora method builder")
         self.aurora_builder_action.triggered.connect(self.open_aurora_builder)
@@ -688,7 +727,7 @@ class main_window(QMainWindow):
             return
 
         try:
-            devices = pslib.find_devices()
+            devices = pslib.find_devices(debug_mode=self.debug_device_action.isChecked())
         except Exception as exc:
             QMessageBox.critical(
                 self,

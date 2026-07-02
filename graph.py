@@ -206,7 +206,7 @@ class graph_widget(QWidget):
         self.right_curve = None
         self.plot_item.hideAxis("right")
 
-    def _update_right_axis(self):
+    def _update_right_axis(self): # TODO:fixa till eis data, inte numrerat? eller pröva fler eis? 
         if self.right_view is None:
             return
         self.right_view.setGeometry(self.plot_item.vb.sceneBoundingRect())
