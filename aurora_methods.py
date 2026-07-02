@@ -10,7 +10,7 @@ from aurora_unicycler.palmsens import PalmSensDevice
 
 
 PACKAGE_FORMAT = "palmsens_aurora_method_package"
-PACKAGE_VERSION = 1
+PACKAGE_VERSION = 2
 
 
 AURORA_DEVICE_OPTIONS = (
@@ -51,31 +51,6 @@ class AuroraExportSettings:
     eis_dc_current_ma: float
     additional_measurements: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "sample_name": self.sample_name,
-            "capacity_mAh": self.capacity_mAh,
-            "device_key": self.device_key,
-            "channel": self.channel,
-            "scan_step_voltage_v": self.scan_step_voltage_v,
-            "eis_dc_potential_v": self.eis_dc_potential_v,
-            "eis_dc_current_ma": self.eis_dc_current_ma,
-            "additional_measurements": list(self.additional_measurements),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AuroraExportSettings":
-        return cls(
-            sample_name=data.get("sample_name"),
-            capacity_mAh=data.get("capacity_mAh"),
-            device_key=data.get("device_key", "emstat4_hr"),
-            channel=int(data.get("channel", 0)),
-            scan_step_voltage_v=data.get("scan_step_voltage_v"),
-            eis_dc_potential_v=float(data.get("eis_dc_potential_v", 0.0)),
-            eis_dc_current_ma=float(data.get("eis_dc_current_ma", 0.0)),
-            additional_measurements=tuple(data.get("additional_measurements", ())),
-        )
-
 
 @dataclass(frozen=True)
 class AuroraMethodPackage:
@@ -83,8 +58,6 @@ class AuroraMethodPackage:
     source_mode: str
     source_payload: dict[str, Any] | str
     protocol_json: dict[str, Any]
-    settings: AuroraExportSettings
-    methodscript: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,21 +67,19 @@ class AuroraMethodPackage:
             "source_mode": self.source_mode,
             "source_payload": self.source_payload,
             "protocol_json": self.protocol_json,
-            "settings": self.settings.to_dict(),
-            "methodscript": self.methodscript,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuroraMethodPackage":
         if data.get("format") != PACKAGE_FORMAT:
             raise ValueError("Unsupported Aurora package format.")
+        if data.get("version") != PACKAGE_VERSION:
+            raise ValueError("Unsupported Aurora package version.")
         return cls(
             name=data.get("name", "Aurora Method"),
             source_mode=data.get("source_mode", "aurora_visual"),
             source_payload=data.get("source_payload", {}),
             protocol_json=data.get("protocol_json", {}),
-            settings=AuroraExportSettings.from_dict(data.get("settings", {})),
-            methodscript=data.get("methodscript", ""),
         )
 
 
@@ -167,14 +138,12 @@ def build_aurora_protocol(source_mode: str, source_payload: dict[str, Any] | str
 def build_aurora_methodscript(
     protocol: aurora_unicycler.CyclingProtocol,
     settings: AuroraExportSettings,
-    *,
-    channel_override: int | None = None,
 ) -> str:
     return protocol.to_palmsens_methodscript(
         sample_name=settings.sample_name,
         capacity_mAh=settings.capacity_mAh,
         device=PalmSensDevice(settings.device_key),
-        channel=settings.channel if channel_override is None else channel_override,
+        channel=settings.channel,
         scan_step_voltage_V=settings.scan_step_voltage_v,
         eis_dc_potential_V=settings.eis_dc_potential_v,
         eis_dc_current_mA=settings.eis_dc_current_ma,
@@ -187,27 +156,22 @@ def build_aurora_package(
     name: str,
     source_mode: str,
     source_payload: dict[str, Any] | str,
-    settings: AuroraExportSettings,
 ) -> AuroraMethodPackage:
     protocol = build_aurora_protocol(source_mode, source_payload)
-    methodscript = build_aurora_methodscript(protocol, settings)
     return AuroraMethodPackage(
         name=name,
         source_mode=source_mode,
         source_payload=source_payload,
         protocol_json=protocol.to_dict(),
-        settings=settings,
-        methodscript=methodscript,
     )
 
 
-def render_aurora_package_for_channel(
+def render_aurora_package(
     package: AuroraMethodPackage,
-    *,
-    channel_override: int | None = None,
+    settings: AuroraExportSettings,
 ) -> str:
     protocol = aurora_unicycler.CyclingProtocol.from_dict(package.protocol_json)
-    return build_aurora_methodscript(protocol, package.settings, channel_override=channel_override)
+    return build_aurora_methodscript(protocol, settings)
 
 
 def save_aurora_package(path: Path | str, package: AuroraMethodPackage) -> None:
