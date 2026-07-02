@@ -63,9 +63,19 @@ class UnifiedDataset:
         return self._arrays
 
 
-def measurement_dataset_views(measurement, include_subscans: bool = False) -> list[DatasetView]:
+def measurement_dataset_views(
+    measurement,
+    include_subscans: bool = False,
+    include_individual_eis: bool = True,
+    include_unified_eis: bool = True,
+) -> list[DatasetView]:
     if isinstance(measurement, LogicalMeasurementRun):
-        return _logical_measurement_dataset_views(measurement, include_subscans=include_subscans)
+        return _logical_measurement_dataset_views(
+            measurement,
+            include_subscans=include_subscans,
+            include_individual_eis=include_individual_eis,
+            include_unified_eis=include_unified_eis,
+        )
 
     views: list[DatasetView] = []
 
@@ -177,6 +187,8 @@ def _logical_measurement_dataset_views(
     measurement: LogicalMeasurementRun,
     *,
     include_subscans: bool = False,
+    include_individual_eis: bool = True,
+    include_unified_eis: bool = True,
 ) -> list[DatasetView]:
     views: list[DatasetView] = []
 
@@ -184,29 +196,62 @@ def _logical_measurement_dataset_views(
         (segment, _get_dataset(segment.source))
         for segment in measurement.segments
         if _get_dataset(segment.source) is not None
+        and not _eis_data_items(segment.source)
     ]
     normal_dataset = _unify_segment_datasets(f"{measurement.title} measurement", normal_sources)
     if _has_arrays(normal_dataset):
         views.append(DatasetView("measurement", measurement.title, normal_dataset, measurement))
 
     eis_sources = []
+    individual_eis_sources = []
     for segment in measurement.segments:
-        for eis_data in _eis_data_items(segment.source):
+        for eis_index, eis_data in enumerate(_eis_data_items(segment.source), start=1):
             dataset = _get_dataset(eis_data)
             if dataset is not None:
                 eis_sources.append((segment, dataset))
+                individual_eis_sources.append(
+                    (
+                        segment,
+                        dataset,
+                        eis_data,
+                        f"eis_step_{segment.index}_{eis_index}",
+                        _segment_eis_title(segment, eis_index),
+                    )
+                )
 
             if include_subscans:
-                for subscan in _subscan_items(eis_data):
+                for subscan_index, subscan in enumerate(_subscan_items(eis_data), start=1):
                     subscan_dataset = _get_dataset(subscan)
                     if subscan_dataset is not None:
                         eis_sources.append((segment, subscan_dataset))
+                        individual_eis_sources.append(
+                            (
+                                segment,
+                                subscan_dataset,
+                                subscan,
+                                f"eis_step_{segment.index}_{eis_index}_subscan_{subscan_index}",
+                                f"{_segment_eis_title(segment, eis_index)} subscan {subscan_index}",
+                            )
+                        )
 
-    eis_dataset = _unify_segment_datasets(f"{measurement.title} EIS", eis_sources)
-    if _has_arrays(eis_dataset):
+    if include_individual_eis:
+        for segment, dataset, source, view_id, title in individual_eis_sources:
+            individual_dataset = _unify_segment_datasets(title, [(segment, dataset)])
+            if _has_arrays(individual_dataset):
+                views.append(DatasetView(view_id, title, individual_dataset, source, is_eis=True))
+
+    eis_dataset = _unify_segment_datasets(f"{measurement.title} EIS", eis_sources) if include_unified_eis else None
+    if include_unified_eis and _has_arrays(eis_dataset):
         views.append(DatasetView("eis", f"{measurement.title} EIS", eis_dataset, measurement, is_eis=True))
 
     return views
+
+
+def _segment_eis_title(segment: MeasurementSegment, eis_index: int) -> str:
+    step_id = segment.source_step_index if segment.source_step_index is not None else segment.index
+    step_type = segment.step_type or segment.label or "EIS"
+    suffix = f" EIS {eis_index}" if eis_index > 1 else " EIS"
+    return f"Step {step_id}: {step_type}{suffix}"
 
 
 def _unify_segment_datasets(

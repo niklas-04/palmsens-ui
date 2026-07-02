@@ -19,7 +19,7 @@ import pyqtgraph as pg
 import re
 import numpy as np
 
-from measurement_data import dataset_arrays, default_axis_indexes, measurement_arrays, measurement_dataset_views
+from measurement_data import DatasetView, dataset_arrays, default_axis_indexes, measurement_arrays, measurement_dataset_views
 
 def _canonical_measurement_name(name):
     if name.startswith("Applied"):
@@ -45,6 +45,14 @@ def _get_unit(data_array, default = None):
 def _get_name(data_array, default = None):
     return getattr(data_array, "name", default)
 
+class _LiveDataset:
+    def __init__(self, title, arrays):
+        self.title = title
+        self._arrays = tuple(arrays)
+
+    def arrays(self):
+        return self._arrays
+
 class graph_widget(QWidget):
     def __init__(self):
         super().__init__()
@@ -53,6 +61,8 @@ class graph_widget(QWidget):
         self.x_index = None
         self.y_index = None
         self.dataset_view_id = None
+        self.live_dataset_views = []
+        self.live_axis_selection = None
         self.live_curve = None
         self.right_view = None
         self.right_curve = None
@@ -72,7 +82,12 @@ class graph_widget(QWidget):
 
     def plot_measurement(self, measurement, selection=None):
         self.measurement = measurement
+        self.live_dataset_views = []
+        self.live_axis_selection = None
         dataset_view = self._dataset_view_for_selection(measurement, selection)
+        self._plot_dataset_view(dataset_view, selection)
+
+    def _plot_dataset_view(self, dataset_view, selection=None):
         arrays = dataset_arrays(dataset_view.dataset) if dataset_view is not None else []
 
         if not arrays:
@@ -122,7 +137,9 @@ class graph_widget(QWidget):
                           )
 
     def _dataset_view_for_selection(self, measurement, selection=None):
-        dataset_views = measurement_dataset_views(measurement)
+        return self._dataset_view_from_views(measurement_dataset_views(measurement), selection)
+
+    def _dataset_view_from_views(self, dataset_views, selection=None):
         if not dataset_views:
             return None
 
@@ -144,40 +161,33 @@ class graph_widget(QWidget):
 
     def plot_live_data(self, callback_data):
         self.measurement = None
+        dataset_view = self._live_dataset_view(callback_data)
+        if dataset_view is None:
+            return
+
+        self.live_dataset_views = [dataset_view]
+        selection = self.live_axis_selection
+        if selection and selection.get("dataset_id") != dataset_view.id:
+            selection = None
+        self._plot_dataset_view(dataset_view, selection)
+
+    def plot_live_selection(self, selection):
+        self.live_axis_selection = selection
+        dataset_view = self._dataset_view_from_views(self.live_dataset_views, selection)
+        self._plot_dataset_view(dataset_view, selection)
+
+    def _live_dataset_view(self, callback_data):
         x_array = getattr(callback_data, "x_array", None)
         y_array = getattr(callback_data, "y_array", None)
         if x_array is not None and y_array is not None:
-            self.dataset_view_id = None
-            self.x_index = 0
-            self.y_index = 1
-            self._plot_arrays(
-                x_array.to_numpy(),
-                y_array.to_numpy(),
-                f"{x_array.name}, {x_array.unit}",
-                f"{y_array.name}, {y_array.unit}",
-            )
-            return
+            dataset = _LiveDataset("Live Data", (x_array, y_array))
+            return DatasetView("live", "Live Data", dataset, callback_data)
 
         dataset = getattr(callback_data, "data", None)
-        arrays = dataset_arrays(dataset) if dataset is not None else []
-        if not arrays:
-            return
-
-        self.dataset_view_id = "eis_live"
-        self.x_index, self.y_index = default_axis_indexes(arrays)
-        if self.x_index >= len(arrays):
-            self.x_index = 0
-        if self.y_index >= len(arrays):
-            self.y_index = min(1, len(arrays) - 1)
-
-        x_array = arrays[self.x_index]
-        y_array = arrays[self.y_index]
-        self._plot_arrays(
-            x_array.to_numpy(),
-            y_array.to_numpy(),
-            f"{x_array.name}, {x_array.unit}",
-            f"{y_array.name}, {y_array.unit}",
-        )
+        if dataset is None:
+            return None
+        title = getattr(dataset, "title", None) or "Live EIS"
+        return DatasetView("eis_live", str(title), dataset, callback_data, is_eis=True)
 
     def _plot_arrays(self, x_array, y_array, x_label, y_label):
         x_array = np.asarray(x_array).ravel()
@@ -537,24 +547,33 @@ class graph_panel(QFrame):
     def edit_axes(self):
         measurement = self.graph.measurement
         if measurement is None:
+            dataset_views = self.graph.live_dataset_views
+        else:
+            dataset_views = measurement_dataset_views(measurement)
+
+        if not dataset_views:
             QMessageBox.information(
                 self,
-                "No measurement loaded",
-                "Load or run a measurement before editing axes.",
+                "No data loaded",
+                "Load a measurement or wait for live data before editing axes.",
             )
             return
 
-        dataset_views = measurement_dataset_views(measurement)
-        if not dataset_views:
+        if measurement is None:
+            current_dataset_view = self.graph._dataset_view_from_views(dataset_views)
+            arrays = dataset_arrays(current_dataset_view.dataset) if current_dataset_view is not None else []
+        else:
+            current_dataset_view = self.graph._dataset_view_for_selection(measurement)
+            arrays = dataset_arrays(current_dataset_view.dataset) if current_dataset_view is not None else measurement_arrays(measurement)
+
+        if not arrays:
             QMessageBox.warning(
                 self,
                 "No data arrays",
-                "This measurement does not contain any plottable arrays.",
+                "The current data does not contain any plottable arrays.",
             )
             return
 
-        current_dataset_view = self.graph._dataset_view_for_selection(measurement)
-        arrays = dataset_arrays(current_dataset_view.dataset) if current_dataset_view is not None else measurement_arrays(measurement)
         current_x = self.graph.x_index if isinstance(self.graph.x_index, int) else 0
         current_y = self.graph.y_index if isinstance(self.graph.y_index, int) else min(1, len(arrays) - 1)
 
@@ -570,4 +589,7 @@ class graph_panel(QFrame):
         )
         if dialog.exec():
             selection = dialog.selected_axes()
-            self.graph.plot_measurement(measurement, selection=selection)
+            if measurement is None:
+                self.graph.plot_live_selection(selection)
+            else:
+                self.graph.plot_measurement(measurement, selection=selection)
