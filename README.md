@@ -20,18 +20,18 @@ Some of the functionality includes:
 
 Temperature steps are non-Palsmens native steps and are handled directly by the app through `temperature_chamber/temperature_controller.py`. Enable the Arduino temperature chamber in the Aurora package run dialog, choose the serial settings, then run the method normally.
 
-Leave the serial port blank to auto-detect Arduino/CH340 USB serial devices, or enter a port such as `COM31`.
+Leave the serial port blank to auto-detect Arduino USB serial devices, or enter a port such as `COM31`.
 
 ## Running
 Install the project dependencies:
 
 ```powershell
-pip install -e .
+make setup
 ```
 
 then run:
 
 ```powershell
-python main.py
+make run
 ```
 Note: if using a local aurora package, put the library in the top-most directory.
