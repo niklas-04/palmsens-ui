@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from graph import graph_panel
 from method_config import METHOD_ORDER, METHOD_SPECS, build_method
 from method_worker import measurement_worker
+from temperature_chamber.temperature_controller import TemperatureProgress, TemperatureSettings
 import ps_helpers as pslib
 
 PANEL_COLUMNS = 3
@@ -324,18 +325,26 @@ class method_configuration_dialog(QDialog):
         self.setObjectName("methodConfigDialog")
         self.setWindowTitle(f"Run Measurement - {title}")
         self.resize(760, 620)
+        self.setMinimumSize(560, 420)
         self.dialog_title = title
         self.method = None
         self.method_label = ""
+        self.temperature_settings = None
         self.instrument = instrument
         self.imported_package = None
         self.imported_package_path: Path | None = None
         self.field_widgets: dict[str, QLineEdit] = {}
         self.additional_measurement_checks: dict[str, QCheckBox] = {}
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        dialog_layout = QVBoxLayout(self)
+        dialog_layout.setContentsMargins(16, 16, 16, 16)
+        dialog_layout.setSpacing(12)
+
+        self.scroll_content = QWidget(self)
+        layout = QVBoxLayout(self.scroll_content)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+
         self.form_layout = QFormLayout()
         self.form_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.setHorizontalSpacing(12)
@@ -421,6 +430,45 @@ class method_configuration_dialog(QDialog):
             self.additional_measurement_checks[var_type] = checkbox
             self.additional_measurement_layout.addWidget(checkbox, index // 2, index % 2)
         package_layout.addWidget(self.additional_measurement_widget)
+
+        temperature_title = QLabel("Temperature Chamber", self.package_widget)
+        temperature_title.setObjectName("auroraCardTitle")
+        package_layout.addWidget(temperature_title)
+
+        self.temperature_enabled_checkbox = QCheckBox("Enable Arduino temperature chamber", self.package_widget)
+        package_layout.addWidget(self.temperature_enabled_checkbox)
+
+        self.temperature_form = QFormLayout()
+        self.temperature_form.setContentsMargins(0, 0, 0, 0)
+        self.temperature_form.setHorizontalSpacing(12)
+        self.temperature_form.setVerticalSpacing(8)
+        package_layout.addLayout(self.temperature_form)
+
+        self.temperature_port_edit = QLineEdit("", self.package_widget)
+        self.temperature_port_edit.setPlaceholderText("COM31 or blank for auto-detect")
+        self.temperature_form.addRow("Serial port", self.temperature_port_edit)
+
+        self.temperature_baud_edit = QLineEdit("9600", self.package_widget)
+        self.temperature_form.addRow("Baud rate", self.temperature_baud_edit)
+
+        self.temperature_tolerance_edit = QLineEdit("0.5", self.package_widget)
+        self.temperature_form.addRow("Tolerance (degC)", self.temperature_tolerance_edit)
+
+        self.temperature_poll_interval_edit = QLineEdit("1.0", self.package_widget)
+        self.temperature_form.addRow("Poll interval (s)", self.temperature_poll_interval_edit)
+
+        self.temperature_timeout_edit = QLineEdit("", self.package_widget)
+        self.temperature_timeout_edit.setPlaceholderText("Blank = no timeout")
+        self.temperature_form.addRow("Timeout (s)", self.temperature_timeout_edit)
+
+        default_log_dir = Path(__file__).with_name("out2") / "temp_logs"
+        self.temperature_log_dir_edit = QLineEdit(str(default_log_dir), self.package_widget)
+        self.temperature_form.addRow("Log directory", self.temperature_log_dir_edit)
+
+        self.temperature_stop_on_abort_checkbox = QCheckBox("Stop chamber on abort", self.package_widget)
+        self.temperature_stop_on_abort_checkbox.setChecked(True)
+        package_layout.addWidget(self.temperature_stop_on_abort_checkbox)
+
         layout.addWidget(self.package_widget)
 
         self.script_help = QLabel(self)
@@ -442,6 +490,12 @@ class method_configuration_dialog(QDialog):
         self.script_editor.setMinimumHeight(320)
         layout.addWidget(self.script_editor, 1)
 
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setWidget(self.scroll_content)
+        dialog_layout.addWidget(self.scroll_area, 1)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
@@ -451,12 +505,14 @@ class method_configuration_dialog(QDialog):
             self.run_button.setText("Run")
         button_box.accepted.connect(self.validate_and_accept)
         button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        dialog_layout.addWidget(button_box)
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
         self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
         self.aurora_device_combo.currentIndexChanged.connect(self.update_additional_measurements)
+        self.temperature_enabled_checkbox.toggled.connect(self.update_temperature_fields)
         self.update_additional_measurements()
+        self.update_temperature_fields()
         self.rebuild_fields()
         self.rebuild_mode()
 
@@ -491,6 +547,43 @@ class method_configuration_dialog(QDialog):
             var_type
             for var_type, checkbox in self.additional_measurement_checks.items()
             if checkbox.isEnabled() and checkbox.isChecked()
+        )
+
+    def update_temperature_fields(self):
+        enabled = self.temperature_enabled_checkbox.isChecked()
+        for widget in (
+            self.temperature_port_edit,
+            self.temperature_baud_edit,
+            self.temperature_tolerance_edit,
+            self.temperature_poll_interval_edit,
+            self.temperature_timeout_edit,
+            self.temperature_log_dir_edit,
+            self.temperature_stop_on_abort_checkbox,
+        ):
+            widget.setEnabled(enabled)
+
+    def build_temperature_settings(self) -> TemperatureSettings | None:
+        if not self.temperature_enabled_checkbox.isChecked():
+            return None
+
+        tolerance_c = self.parse_float(self.temperature_tolerance_edit, "Temperature tolerance")
+        poll_interval_s = self.parse_float(self.temperature_poll_interval_edit, "Temperature poll interval")
+        timeout_s = self.parse_optional_float(self.temperature_timeout_edit, "Temperature timeout")
+        if tolerance_c <= 0:
+            raise ValueError("Temperature tolerance must be greater than 0.")
+        if poll_interval_s <= 0:
+            raise ValueError("Temperature poll interval must be greater than 0.")
+        if timeout_s is not None and timeout_s <= 0:
+            raise ValueError("Temperature timeout must be greater than 0.")
+
+        return TemperatureSettings(
+            port=self.temperature_port_edit.text().strip() or None,
+            baud_rate=self.parse_int(self.temperature_baud_edit, "Temperature baud rate"),
+            tolerance_c=tolerance_c,
+            poll_interval_s=poll_interval_s,
+            timeout_s=timeout_s,
+            log_dir=self.temperature_log_dir_edit.text().strip() or None,
+            stop_on_abort=self.temperature_stop_on_abort_checkbox.isChecked(),
         )
 
     def build_aurora_export_settings(self) -> AuroraExportSettings:
@@ -566,8 +659,14 @@ class method_configuration_dialog(QDialog):
             if run_mode == "native":
                 self.method = build_method(self.selected_method_key(), self.raw_params())
                 self.method_label = METHOD_SPECS[self.selected_method_key()].label
+                self.temperature_settings = None
             else:
                 self.method = self.build_script_method(run_mode)
+                self.temperature_settings = (
+                    self.build_temperature_settings()
+                    if run_mode == "aurora_package"
+                    else None
+                )
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid parameters", str(exc))
             return
@@ -1094,11 +1193,15 @@ class main_window(QMainWindow):
 
         method = dialog.method
         method_label = dialog.method_label
-        self.start_measurement(panel, method, method_label)
+        self.start_measurement(panel, method, method_label, dialog.temperature_settings)
 
-    def start_measurement(self, panel: graph_panel, method, method_label: str):
+    def start_measurement(self, panel: graph_panel, method, method_label: str, temperature_settings=None):
         thread = QThread(self)
-        worker = measurement_worker(panel.instrument, method)
+        worker = measurement_worker(
+            panel.instrument,
+            method,
+            temperature_settings=temperature_settings,
+        )
         worker.moveToThread(thread)
         self.worker_panels[worker] = panel
         self.worker_method_labels[worker] = method_label
@@ -1134,6 +1237,10 @@ class main_window(QMainWindow):
     def handle_worker_progress(self, worker, callback_data):
         panel = self.worker_panels.get(worker)
         if panel is None or panel not in self.panels:
+            return
+        if isinstance(callback_data, TemperatureProgress):
+            panel.set_status_text(callback_data.message)
+            self.statusBar().showMessage(f"{panel.base_title}: {callback_data.message}", 0)
             return
         panel.graph.plot_live_data(callback_data)
 

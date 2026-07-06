@@ -448,7 +448,7 @@ def _is_open_circuit_group(group) -> bool:
     return False
 
 
-def _is_open_circuit_step_type(value) -> bool:
+def _is_open_circuit_step_type(value) -> bool: # Behövs pga ocv inte innehåller ström som gör att den saknas i bdf export
     normalized = _normalize_text(value)
     return normalized in {"opencircuitvoltage", "ocv"}
 
