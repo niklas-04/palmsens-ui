@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pypalmsens as ps
 from app_style import APP_STYLESHEET
-from aurora_methods import (
+from aurora_app.aurora_methods import (
     AURORA_ADDITIONAL_MEASUREMENT_OPTIONS,
     AURORA_DEVICE_MEASUREMENT_TYPES,
     AURORA_DEVICE_OPTIONS,
@@ -46,10 +46,10 @@ from graph import graph_panel
 from method_config import METHOD_ORDER, METHOD_SPECS, build_method
 from method_worker import measurement_worker
 from temperature_chamber.temperature_controller import TemperatureProgress, TemperatureSettings
-import ps_helpers as pslib
+import device_helpers as pslib
 
 PANEL_COLUMNS = 3
-
+AURORA_APP_SUBDIRECTORY = "aurora_app"
 
 class connection_indicator(QLabel):
     def __init__(self, parent=None):
@@ -123,7 +123,10 @@ class bdf_export_dialog(QDialog):
         self.file_type_combo_box.addItem("parquet", "parquet")
 
         self.cell_name_edit = QLineEdit(self)
-        self.cell_name_edit.setText("A0001")
+        self.cell_name_edit.setPlaceholderText("e.g. A0001")
+
+        self.cas_id_edit = QLineEdit(self)
+        self.cas_id_edit.setPlaceholderText("e.g. nisu1374")
 
         self.export_separate_checkbox = QCheckBox("Export each measurement separately", self)
         self.export_separate_checkbox.setChecked(False)
@@ -135,14 +138,37 @@ class bdf_export_dialog(QDialog):
         output_options_layout.setVerticalSpacing(8)
         output_options_layout.addWidget(QLabel("Format", output_options), 0, 0)
         output_options_layout.addWidget(self.file_type_combo_box, 0, 1, 1, 2)
-        output_options_layout.addWidget(QLabel("Cell name", output_options), 1, 0)
-        output_options_layout.addWidget(self.cell_name_edit, 1, 1, 1, 2)
-        output_options_layout.addWidget(self.export_separate_checkbox, 2, 1, 1, 2)
-        output_options_layout.addWidget(QLabel("Folder", output_options), 3, 0)
-        output_options_layout.addWidget(self.output_dir_edit, 3, 1)
-        output_options_layout.addWidget(browse_button, 3, 2)
         output_options_layout.setColumnStretch(1, 1)
         layout.addWidget(output_options)
+
+        naming_header = QLabel("Naming", self)
+        layout.addWidget(naming_header)
+
+        naming_frame = QFrame(self)
+        naming_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        naming_frame.setFrameShadow(QFrame.Shadow.Plain)
+        naming_layout = QGridLayout(naming_frame)
+        naming_layout.setContentsMargins(10, 10, 10, 10)
+        naming_layout.setHorizontalSpacing(8)
+        naming_layout.setVerticalSpacing(8)
+        naming_layout.addWidget(QLabel("Cell name", naming_frame), 0, 0)
+        naming_layout.addWidget(self.cell_name_edit, 0, 1)
+        naming_layout.addWidget(QLabel("CAS ID", naming_frame), 1, 0)
+        naming_layout.addWidget(self.cas_id_edit, 1, 1)
+        naming_layout.setColumnStretch(1, 1)
+        layout.addWidget(naming_frame)
+
+        folder_options = QWidget(self)
+        folder_options_layout = QGridLayout(folder_options)
+        folder_options_layout.setContentsMargins(0, 0, 0, 0)
+        folder_options_layout.setHorizontalSpacing(8)
+        folder_options_layout.setVerticalSpacing(8)
+        folder_options_layout.addWidget(QLabel("Folder", folder_options), 0, 0)
+        folder_options_layout.addWidget(self.output_dir_edit, 0, 1)
+        folder_options_layout.addWidget(browse_button, 0, 2)
+        folder_options_layout.addWidget(self.export_separate_checkbox, 1, 1, 1, 2)
+        folder_options_layout.setColumnStretch(1, 1)
+        layout.addWidget(folder_options)
 
         channel_header = QLabel("Channels", self)
         layout.addWidget(channel_header)
@@ -253,6 +279,9 @@ class bdf_export_dialog(QDialog):
 
     def cell_name(self):
         return self.cell_name_edit.text().strip() or "A0001"
+
+    def cas_id(self):
+        return self.cas_id_edit.text().strip()
 
     def selected_optional_quantity_keys(self):
         return {
@@ -990,8 +1019,10 @@ class main_window(QMainWindow):
         self.disconnect_action.setEnabled(is_connected)
 
     def open_aurora_builder(self):
-        builder_path = Path(__file__).with_name("aurora_method_builder_app.py")
-        started = QProcess.startDetached(sys.executable, [str(builder_path)])
+        app_dir = Path(__file__).parent
+        builder_module = f"{AURORA_APP_SUBDIRECTORY}.aurora_method_builder_app"
+        builder_path = app_dir / AURORA_APP_SUBDIRECTORY / "aurora_method_builder_app.py"
+        started = QProcess.startDetached(sys.executable, ["-m", builder_module], str(app_dir))
         if not started:
             QMessageBox.warning(
                 self,
@@ -1083,17 +1114,19 @@ class main_window(QMainWindow):
             written_files = []
             selected_panels = dialog.selected_panels()
             cell_name = dialog.cell_name()
+            cas_id = dialog.cas_id()
             out_type = dialog.selected_type()
             used_sequence_numbers = set()
             for panel in selected_panels:
                 sequence_number = self._next_bdf_sequence_number(
                     output_dir,
                     cell_name,
+                    cas_id,
                     out_type,
                     used_sequence_numbers,
                 )
                 used_sequence_numbers.add(sequence_number)
-                filename_stem = self._bdf_export_stem(cell_name, sequence_number)
+                filename_stem = self._bdf_export_stem(cell_name, cas_id, sequence_number)
                 written_files.extend(
                     export_measurement_to_bdf_files(
                         panel.graph.measurement,
@@ -1327,12 +1360,15 @@ class main_window(QMainWindow):
     def _sanitize_export_name(name: str) -> str:
         cleaned = "".join(character if character.isalnum() else "_" for character in name.strip())
         cleaned = cleaned.strip("_")
-        return cleaned or "channel"
+        return cleaned
 
     @classmethod
-    def _bdf_export_stem(cls, cell_name: str, sequence_number: int) -> str:
+    def _bdf_export_stem(cls, cell_name: str, cas_id: str, sequence_number: int) -> str:
         sanitized_cell_name = cls._sanitize_export_name(cell_name)
+        sanitized_cas_id = cls._sanitize_export_name(cas_id)
         export_date = date.today().strftime("%Y%m%d")
+        if sanitized_cas_id:
+            return f"UU__{sanitized_cell_name}__{sanitized_cas_id}__{export_date}_{sequence_number:03d}"
         return f"UU__{sanitized_cell_name}__{export_date}_{sequence_number:03d}"
 
     @classmethod
@@ -1340,6 +1376,7 @@ class main_window(QMainWindow):
         cls,
         output_dir: Path,
         cell_name: str,
+        cas_id: str,
         export_type: str,
         used_sequence_numbers: set[int],
     ) -> int:
@@ -1347,6 +1384,7 @@ class main_window(QMainWindow):
         while sequence_number in used_sequence_numbers or cls._bdf_sequence_exists(
             output_dir,
             cell_name,
+            cas_id,
             sequence_number,
             export_type,
         ):
@@ -1358,10 +1396,11 @@ class main_window(QMainWindow):
         cls,
         output_dir: Path,
         cell_name: str,
+        cas_id: str,
         sequence_number: int,
         export_type: str,
     ) -> bool:
-        stem = cls._bdf_export_stem(cell_name, sequence_number)
+        stem = cls._bdf_export_stem(cell_name, cas_id, sequence_number)
         return any(output_dir.glob(f"{stem}*.{export_type}"))
 
     def _panel_export_stem(self, panel: graph_panel) -> str:

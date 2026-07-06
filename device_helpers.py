@@ -5,7 +5,7 @@ import pypalmsens as ps
 
 from measurement_data import LogicalMeasurementRun
 
-
+# DEBUG
 @dataclass(slots=True)
 class mock_instrument:
     id: str
@@ -33,7 +33,7 @@ def create_mock_device(name: str, channel_count: int):
         channels.append(instrument)
 
     return discovered_device(name, channels)
-
+# DEBUG
 
 
 @dataclass(slots=True)

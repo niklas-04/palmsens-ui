@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from app_style import APP_STYLESHEET
-from aurora_builder import AuroraVisualBuilder
-from aurora_methods import (
+from aurora_app.aurora_builder import AuroraVisualBuilder
+from aurora_app.aurora_methods import (
     build_aurora_package,
     load_aurora_package,
 )
