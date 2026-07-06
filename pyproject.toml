@@ -11,7 +11,8 @@ dependencies = [
 	"pyqtgraph",
 	"pandas",
 	"batterydf",
-	"aurora-unicycler"
+	"aurora-unicycler",
+	"pyserial"
 ]
 
 [tool.uv.sources]
