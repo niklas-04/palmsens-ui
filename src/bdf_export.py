@@ -6,7 +6,7 @@ from pathlib import Path
 import bdf
 import pandas as pd
 
-from measurement_data import dataset_arrays, measurement_dataset_views
+from src.measurement_data import dataset_arrays, measurement_dataset_views
 
 
 _GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$")
@@ -279,7 +279,7 @@ def export_measurement_to_bdf_files(
     export_separate: bool = False,
     optional_quantity_keys: set[str] | None = None,
 ) -> list[Path]:
-    dataset_views = measurement_dataset_views(measurement)
+    dataset_views = measurement_dataset_views(measurement, include_unified_eis=False)
     if not dataset_views:
         raise BdfExportError("Measurement does not contain any dataset arrays.")
 
@@ -320,7 +320,7 @@ def export_measurement_to_bdf_files(
             raise BdfExportError(export_errors[0])
         raise BdfExportError("Measurement does not contain any exportable dataset groups.")
 
-    combined_dataframes = pd.concat(dataframes, ignore_index=True)
+    combined_dataframes = _sort_bdf_dataframe(pd.concat(dataframes, ignore_index=True))
     combined_stem = f"{filename_stem}_total" if export_separate else filename_stem
     total_path = _unique_output_path(output_dir, combined_stem, export_type)
     _write_dataframe(total_path, combined_dataframes, export_type)
@@ -403,6 +403,10 @@ def _extract_bdf_series(group, optional_quantity_keys: set[str] | None = None) -
 
     missing_columns = [column_key for column_key in _REQUIRED_BDF_KEYS if column_key not in series]
     if missing_columns:
+        _add_open_circuit_current(series, group)
+        missing_columns = [column_key for column_key in _REQUIRED_BDF_KEYS if column_key not in series]
+
+    if missing_columns:
         raise BdfExportError(
             "Missing required BDF quantities. The measurement must include time, voltage, and current arrays."
         )
@@ -413,6 +417,40 @@ def _extract_bdf_series(group, optional_quantity_keys: set[str] | None = None) -
     _ensure_matching_lengths(series)
 
     return series
+
+
+def _add_open_circuit_current(series: dict[str, list], group):
+    if "current_ampere" in series:
+        return
+    if "test_time_second" not in series or "voltage_volt" not in series:
+        return
+    if not _is_open_circuit_group(group):
+        return
+
+    series["current_ampere"] = [0.0] * len(series["test_time_second"])
+
+
+def _is_open_circuit_group(group) -> bool:
+    for entry in group["arrays"]:
+        data_array = entry["array"]
+        base_key = entry["base_key"]
+        array_name = getattr(data_array, "name", base_key)
+        array_type = getattr(data_array, "type", "")
+        quantity = getattr(data_array, "quantity", "")
+        unit = getattr(data_array, "unit", "")
+        if _detect_bdf_column(base_key, array_name, array_type, quantity, unit) != "step_type":
+            continue
+
+        values = data_array.to_numpy()
+        if any(_is_open_circuit_step_type(value) for value in values):
+            return True
+
+    return False
+
+
+def _is_open_circuit_step_type(value) -> bool: # Behövs pga ocv inte innehåller ström som gör att den saknas i bdf export
+    normalized = _normalize_text(value)
+    return normalized in {"opencircuitvoltage", "ocv"}
 
 
 def _raw_dependency_keys(optional_quantity_keys: set[str] | None) -> set[str]:
@@ -807,6 +845,13 @@ def _build_dataframe(series: dict[str, list]) -> pd.DataFrame:
             dataframe_columns[term.label] = series[term.key]
 
     return pd.DataFrame(dataframe_columns)
+
+
+def _sort_bdf_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    test_time_label = _BDF_TERMS_BY_KEY["test_time_second"].label
+    if test_time_label not in dataframe.columns:
+        return dataframe
+    return dataframe.sort_values(test_time_label, kind="mergesort", ignore_index=True)
 
 
 def _write_csv(path: Path, dataframe: pd.DataFrame):

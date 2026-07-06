@@ -2,12 +2,22 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pypalmsens as ps
-from app_style import APP_STYLESHEET
-from aurora_methods import load_aurora_package, render_aurora_package_for_channel
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
-from PySide6.QtCore import QObject, QSize, Signal, Slot, QMetaObject, Qt, QThread, QProcess
+import pypalmsens as ps
+from src.app_style import APP_STYLESHEET
+from src.aurora_app.aurora_methods import (
+    AURORA_ADDITIONAL_MEASUREMENT_OPTIONS,
+    AURORA_DEVICE_MEASUREMENT_TYPES,
+    AURORA_DEVICE_OPTIONS,
+    AuroraExportSettings,
+    build_aurora_stepwise_method,
+    load_aurora_package,
+)
+
+from src.bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
+from PySide6.QtCore import QObject, QSize, Signal, Slot, Qt, QThread, QProcess
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -35,13 +45,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from graph import graph_panel
-from method_config import METHOD_ORDER, METHOD_SPECS, build_method
-from method_worker import measurement_worker
-import ps_helpers as pslib
+from src.graph import graph_panel
+from src.method_config import METHOD_ORDER, METHOD_SPECS, build_method
+from src.method_worker import measurement_worker
+from src.temperature_chamber.temperature_controller import TemperatureProgress, TemperatureSettings
+import src.device_helpers as pslib
 
 PANEL_COLUMNS = 3
-
+AURORA_APP_SUBDIRECTORY = "aurora_app"
 
 class connection_indicator(QLabel):
     def __init__(self, parent=None):
@@ -115,7 +126,10 @@ class bdf_export_dialog(QDialog):
         self.file_type_combo_box.addItem("parquet", "parquet")
 
         self.cell_name_edit = QLineEdit(self)
-        self.cell_name_edit.setText("A0001")
+        self.cell_name_edit.setPlaceholderText("e.g. A0001")
+
+        self.cas_id_edit = QLineEdit(self)
+        self.cas_id_edit.setPlaceholderText("e.g. nisu1374")
 
         self.export_separate_checkbox = QCheckBox("Export each measurement separately", self)
         self.export_separate_checkbox.setChecked(False)
@@ -127,14 +141,37 @@ class bdf_export_dialog(QDialog):
         output_options_layout.setVerticalSpacing(8)
         output_options_layout.addWidget(QLabel("Format", output_options), 0, 0)
         output_options_layout.addWidget(self.file_type_combo_box, 0, 1, 1, 2)
-        output_options_layout.addWidget(QLabel("Cell name", output_options), 1, 0)
-        output_options_layout.addWidget(self.cell_name_edit, 1, 1, 1, 2)
-        output_options_layout.addWidget(self.export_separate_checkbox, 2, 1, 1, 2)
-        output_options_layout.addWidget(QLabel("Folder", output_options), 3, 0)
-        output_options_layout.addWidget(self.output_dir_edit, 3, 1)
-        output_options_layout.addWidget(browse_button, 3, 2)
         output_options_layout.setColumnStretch(1, 1)
         layout.addWidget(output_options)
+
+        naming_header = QLabel("Naming", self)
+        layout.addWidget(naming_header)
+
+        naming_frame = QFrame(self)
+        naming_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        naming_frame.setFrameShadow(QFrame.Shadow.Plain)
+        naming_layout = QGridLayout(naming_frame)
+        naming_layout.setContentsMargins(10, 10, 10, 10)
+        naming_layout.setHorizontalSpacing(8)
+        naming_layout.setVerticalSpacing(8)
+        naming_layout.addWidget(QLabel("Cell name", naming_frame), 0, 0)
+        naming_layout.addWidget(self.cell_name_edit, 0, 1)
+        naming_layout.addWidget(QLabel("CAS ID", naming_frame), 1, 0)
+        naming_layout.addWidget(self.cas_id_edit, 1, 1)
+        naming_layout.setColumnStretch(1, 1)
+        layout.addWidget(naming_frame)
+
+        folder_options = QWidget(self)
+        folder_options_layout = QGridLayout(folder_options)
+        folder_options_layout.setContentsMargins(0, 0, 0, 0)
+        folder_options_layout.setHorizontalSpacing(8)
+        folder_options_layout.setVerticalSpacing(8)
+        folder_options_layout.addWidget(QLabel("Folder", folder_options), 0, 0)
+        folder_options_layout.addWidget(self.output_dir_edit, 0, 1)
+        folder_options_layout.addWidget(browse_button, 0, 2)
+        folder_options_layout.addWidget(self.export_separate_checkbox, 1, 1, 1, 2)
+        folder_options_layout.setColumnStretch(1, 1)
+        layout.addWidget(folder_options)
 
         channel_header = QLabel("Channels", self)
         layout.addWidget(channel_header)
@@ -246,6 +283,9 @@ class bdf_export_dialog(QDialog):
     def cell_name(self):
         return self.cell_name_edit.text().strip() or "A0001"
 
+    def cas_id(self):
+        return self.cas_id_edit.text().strip()
+
     def selected_optional_quantity_keys(self):
         return {
             quantity_key
@@ -317,17 +357,26 @@ class method_configuration_dialog(QDialog):
         self.setObjectName("methodConfigDialog")
         self.setWindowTitle(f"Run Measurement - {title}")
         self.resize(760, 620)
+        self.setMinimumSize(560, 420)
         self.dialog_title = title
         self.method = None
         self.method_label = ""
+        self.temperature_settings = None
         self.instrument = instrument
         self.imported_package = None
         self.imported_package_path: Path | None = None
         self.field_widgets: dict[str, QLineEdit] = {}
+        self.additional_measurement_checks: dict[str, QCheckBox] = {}
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        dialog_layout = QVBoxLayout(self)
+        dialog_layout.setContentsMargins(16, 16, 16, 16)
+        dialog_layout.setSpacing(12)
+
+        self.scroll_content = QWidget(self)
+        layout = QVBoxLayout(self.scroll_content)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+
         self.form_layout = QFormLayout()
         self.form_layout.setContentsMargins(0, 0, 0, 0)
         self.form_layout.setHorizontalSpacing(12)
@@ -336,7 +385,7 @@ class method_configuration_dialog(QDialog):
 
         self.run_mode_combo = QComboBox(self)
         self.run_mode_combo.addItem("PalmSens method", "native")
-        self.run_mode_combo.addItem("Imported Aurora package", "aurora_package")
+        self.run_mode_combo.addItem("Imported package", "aurora_package")
         self.run_mode_combo.addItem("MethodScript", "methodscript")
         self.form_layout.addRow("Run type", self.run_mode_combo)
 
@@ -357,17 +406,101 @@ class method_configuration_dialog(QDialog):
         package_layout.setContentsMargins(14, 14, 14, 14)
         package_layout.setSpacing(10)
 
-        package_title = QLabel("Imported Aurora Package", self.package_widget)
+        package_title = QLabel("Imported Package", self.package_widget)
         package_title.setObjectName("auroraCardTitle")
         package_layout.addWidget(package_title)
 
-        self.package_info_label = QLabel("No Aurora package loaded.", self.package_widget)
+        self.package_info_label = QLabel("No package loaded.", self.package_widget)
         self.package_info_label.setWordWrap(True)
         package_layout.addWidget(self.package_info_label)
 
-        self.load_package_button = QPushButton("Load Aurora Package", self.package_widget)
+        self.load_package_button = QPushButton("Load Package", self.package_widget)
         self.load_package_button.clicked.connect(self.load_aurora_package_file)
         package_layout.addWidget(self.load_package_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self.package_run_form = QFormLayout()
+        self.package_run_form.setContentsMargins(0, 0, 0, 0)
+        self.package_run_form.setHorizontalSpacing(12)
+        self.package_run_form.setVerticalSpacing(8)
+        package_layout.addLayout(self.package_run_form)
+
+        self.aurora_sample_name_edit = QLineEdit("", self.package_widget)
+        self.package_run_form.addRow("Sample name", self.aurora_sample_name_edit)
+
+        self.aurora_capacity_edit = QLineEdit("", self.package_widget)
+        self.package_run_form.addRow("Capacity (mAh)", self.aurora_capacity_edit)
+
+        self.aurora_device_combo = QComboBox(self.package_widget)
+        for label, value in AURORA_DEVICE_OPTIONS:
+            self.aurora_device_combo.addItem(label, value)
+        self.package_run_form.addRow("PalmSens target", self.aurora_device_combo)
+
+        self.aurora_channel_label = QLabel(str(self.run_channel()), self.package_widget)
+        self.package_run_form.addRow("Channel", self.aurora_channel_label)
+
+        self.aurora_scan_step_edit = QLineEdit("", self.package_widget)
+        self.package_run_form.addRow("Scan step voltage (V)", self.aurora_scan_step_edit)
+
+        self.aurora_eis_dc_potential_edit = QLineEdit("0.0", self.package_widget)
+        self.package_run_form.addRow("EIS DC potential (V)", self.aurora_eis_dc_potential_edit)
+
+        self.aurora_eis_dc_current_edit = QLineEdit("0.0", self.package_widget)
+        self.package_run_form.addRow("EIS DC current (mA)", self.aurora_eis_dc_current_edit)
+
+        extra_measurements_label = QLabel("Extra measurements", self.package_widget)
+        extra_measurements_label.setObjectName("auroraCardTitle")
+        package_layout.addWidget(extra_measurements_label)
+
+        self.additional_measurement_widget = QWidget(self.package_widget)
+        self.additional_measurement_layout = QGridLayout(self.additional_measurement_widget)
+        self.additional_measurement_layout.setContentsMargins(0, 0, 0, 0)
+        self.additional_measurement_layout.setHorizontalSpacing(16)
+        self.additional_measurement_layout.setVerticalSpacing(6)
+        for index, (var_type, label) in enumerate(AURORA_ADDITIONAL_MEASUREMENT_OPTIONS):
+            checkbox = QCheckBox(label, self.additional_measurement_widget)
+            checkbox.setToolTip(f"Measure MethodSCRIPT variable type {var_type} with add_meas.")
+            self.additional_measurement_checks[var_type] = checkbox
+            self.additional_measurement_layout.addWidget(checkbox, index // 2, index % 2)
+        package_layout.addWidget(self.additional_measurement_widget)
+
+        temperature_title = QLabel("Temperature Chamber", self.package_widget)
+        temperature_title.setObjectName("auroraCardTitle")
+        package_layout.addWidget(temperature_title)
+
+        self.temperature_enabled_checkbox = QCheckBox("Enable Arduino temperature chamber", self.package_widget)
+        package_layout.addWidget(self.temperature_enabled_checkbox)
+
+        self.temperature_form = QFormLayout()
+        self.temperature_form.setContentsMargins(0, 0, 0, 0)
+        self.temperature_form.setHorizontalSpacing(12)
+        self.temperature_form.setVerticalSpacing(8)
+        package_layout.addLayout(self.temperature_form)
+
+        self.temperature_port_edit = QLineEdit("", self.package_widget)
+        self.temperature_port_edit.setPlaceholderText("COM31 or blank for auto-detect")
+        self.temperature_form.addRow("Serial port", self.temperature_port_edit)
+
+        self.temperature_baud_edit = QLineEdit("9600", self.package_widget)
+        self.temperature_form.addRow("Baud rate", self.temperature_baud_edit)
+
+        self.temperature_tolerance_edit = QLineEdit("0.5", self.package_widget)
+        self.temperature_form.addRow("Tolerance (degC)", self.temperature_tolerance_edit)
+
+        self.temperature_poll_interval_edit = QLineEdit("1.0", self.package_widget)
+        self.temperature_form.addRow("Poll interval (s)", self.temperature_poll_interval_edit)
+
+        self.temperature_timeout_edit = QLineEdit("", self.package_widget)
+        self.temperature_timeout_edit.setPlaceholderText("Blank = no timeout")
+        self.temperature_form.addRow("Timeout (s)", self.temperature_timeout_edit)
+
+        default_log_dir = Path(__file__).parent.parent / "out2" / "temp_logs"
+        self.temperature_log_dir_edit = QLineEdit(str(default_log_dir), self.package_widget)
+        self.temperature_form.addRow("Log directory", self.temperature_log_dir_edit)
+
+        self.temperature_stop_on_abort_checkbox = QCheckBox("Stop chamber on abort", self.package_widget)
+        self.temperature_stop_on_abort_checkbox.setChecked(True)
+        package_layout.addWidget(self.temperature_stop_on_abort_checkbox)
+
         layout.addWidget(self.package_widget)
 
         self.script_help = QLabel(self)
@@ -389,6 +522,12 @@ class method_configuration_dialog(QDialog):
         self.script_editor.setMinimumHeight(320)
         layout.addWidget(self.script_editor, 1)
 
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setWidget(self.scroll_content)
+        dialog_layout.addWidget(self.scroll_area, 1)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
@@ -398,10 +537,14 @@ class method_configuration_dialog(QDialog):
             self.run_button.setText("Run")
         button_box.accepted.connect(self.validate_and_accept)
         button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        dialog_layout.addWidget(button_box)
 
         self.method_combo.currentIndexChanged.connect(self.rebuild_fields)
         self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
+        self.aurora_device_combo.currentIndexChanged.connect(self.update_additional_measurements)
+        self.temperature_enabled_checkbox.toggled.connect(self.update_temperature_fields)
+        self.update_additional_measurements()
+        self.update_temperature_fields()
         self.rebuild_fields()
         self.rebuild_mode()
 
@@ -416,6 +559,85 @@ class method_configuration_dialog(QDialog):
             field_key: widget.text().strip()
             for field_key, widget in self.field_widgets.items()
         }
+
+    def run_channel(self) -> int:
+        if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0:
+            return self.instrument.channel - 1
+        return 0
+
+    def update_additional_measurements(self):
+        device_key = self.aurora_device_combo.currentData()
+        supported = AURORA_DEVICE_MEASUREMENT_TYPES.get(device_key, set())
+        for var_type, checkbox in self.additional_measurement_checks.items():
+            enabled = var_type in supported
+            checkbox.setEnabled(enabled)
+            if not enabled:
+                checkbox.setChecked(False)
+
+    def selected_additional_measurements(self) -> tuple[str, ...]:
+        return tuple(
+            var_type
+            for var_type, checkbox in self.additional_measurement_checks.items()
+            if checkbox.isEnabled() and checkbox.isChecked()
+        )
+
+    def update_temperature_fields(self):
+        enabled = self.temperature_enabled_checkbox.isChecked()
+        for widget in (
+            self.temperature_port_edit,
+            self.temperature_baud_edit,
+            self.temperature_tolerance_edit,
+            self.temperature_poll_interval_edit,
+            self.temperature_timeout_edit,
+            self.temperature_log_dir_edit,
+            self.temperature_stop_on_abort_checkbox,
+        ):
+            widget.setEnabled(enabled)
+
+    def build_temperature_settings(self) -> TemperatureSettings | None:
+        if not self.temperature_enabled_checkbox.isChecked():
+            return None
+
+        tolerance_c = self.parse_float(self.temperature_tolerance_edit, "Temperature tolerance")
+        poll_interval_s = self.parse_float(self.temperature_poll_interval_edit, "Temperature poll interval")
+        timeout_s = self.parse_optional_float(self.temperature_timeout_edit, "Temperature timeout")
+        if tolerance_c <= 0:
+            raise ValueError("Temperature tolerance must be greater than 0.")
+        if poll_interval_s <= 0:
+            raise ValueError("Temperature poll interval must be greater than 0.")
+        if timeout_s is not None and timeout_s <= 0:
+            raise ValueError("Temperature timeout must be greater than 0.")
+
+        return TemperatureSettings(
+            port=self.temperature_port_edit.text().strip() or None,
+            baud_rate=self.parse_int(self.temperature_baud_edit, "Temperature baud rate"),
+            tolerance_c=tolerance_c,
+            poll_interval_s=poll_interval_s,
+            timeout_s=timeout_s,
+            log_dir=self.temperature_log_dir_edit.text().strip() or None,
+            stop_on_abort=self.temperature_stop_on_abort_checkbox.isChecked(),
+        )
+
+    def build_aurora_export_settings(self) -> AuroraExportSettings:
+        return AuroraExportSettings(
+            sample_name=self.aurora_sample_name_edit.text().strip() or None,
+            capacity_mAh=self.parse_optional_float(self.aurora_capacity_edit, "Capacity (mAh)"),
+            device_key=self.aurora_device_combo.currentData(),
+            channel=self.run_channel(),
+            scan_step_voltage_v=self.parse_optional_float(
+                self.aurora_scan_step_edit,
+                "Scan step voltage (V)",
+            ),
+            eis_dc_potential_v=self.parse_float(
+                self.aurora_eis_dc_potential_edit,
+                "EIS DC potential (V)",
+            ),
+            eis_dc_current_ma=self.parse_float(
+                self.aurora_eis_dc_current_edit,
+                "EIS DC current (mA)",
+            ),
+            additional_measurements=self.selected_additional_measurements(),
+        )
 
     def rebuild_fields(self):
         while self.field_form.rowCount():
@@ -469,8 +691,14 @@ class method_configuration_dialog(QDialog):
             if run_mode == "native":
                 self.method = build_method(self.selected_method_key(), self.raw_params())
                 self.method_label = METHOD_SPECS[self.selected_method_key()].label
+                self.temperature_settings = None
             else:
                 self.method = self.build_script_method(run_mode)
+                self.temperature_settings = (
+                    self.build_temperature_settings()
+                    if run_mode == "aurora_package"
+                    else None
+                )
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid parameters", str(exc))
             return
@@ -500,19 +728,14 @@ class method_configuration_dialog(QDialog):
         if not hasattr(ps, "MethodScript"):
             raise RuntimeError(
                 "This PyPalmSens installation does not expose `MethodScript`. "
-                "Update PyPalmSens before running imported Aurora packages."
+                "Update PyPalmSens before running imported  packages."
             )
 
-        channel_override = None
-        if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0:
-            channel_override = self.instrument.channel - 1
-
-        methodscript = render_aurora_package_for_channel(
+        self.method_label = f"{self.imported_package.name} (step-wise)"
+        return build_aurora_stepwise_method(
             self.imported_package,
-            channel_override=channel_override,
+            self.build_aurora_export_settings(),
         )
-        self.method_label = self.imported_package.name
-        return ps.MethodScript(script=methodscript)
 
     def load_aurora_package_file(self):
         if self.selected_run_mode() != "aurora_package":
@@ -571,16 +794,10 @@ class method_configuration_dialog(QDialog):
             return "No Aurora package loaded."
 
         source_name = self.imported_package_path.name if self.imported_package_path is not None else "Unknown"
-        run_channel = (
-            self.instrument.channel - 1
-            if self.instrument is not None and getattr(self.instrument, "channel", -1) > 0
-            else self.imported_package.settings.channel
-        )
         return (
             f"Package: {self.imported_package.name}\n"
             f"Source file: {source_name}\n"
-            f"Saved channel: {self.imported_package.settings.channel}\n"
-            f"Run channel for this panel: {run_channel}"
+            f"Run channel for this panel: {self.run_channel()}"
         )
 
     @staticmethod
@@ -805,8 +1022,10 @@ class main_window(QMainWindow):
         self.disconnect_action.setEnabled(is_connected)
 
     def open_aurora_builder(self):
-        builder_path = Path(__file__).with_name("aurora_method_builder_app.py")
-        started = QProcess.startDetached(sys.executable, [str(builder_path)])
+        project_dir = Path(__file__).parent.parent
+        builder_module = f"src.{AURORA_APP_SUBDIRECTORY}.aurora_method_builder_app"
+        builder_path = project_dir / "src" / AURORA_APP_SUBDIRECTORY / "aurora_method_builder_app.py"
+        started = QProcess.startDetached(sys.executable, ["-m", builder_module], str(project_dir))
         if not started:
             QMessageBox.warning(
                 self,
@@ -898,17 +1117,19 @@ class main_window(QMainWindow):
             written_files = []
             selected_panels = dialog.selected_panels()
             cell_name = dialog.cell_name()
+            cas_id = dialog.cas_id()
             out_type = dialog.selected_type()
             used_sequence_numbers = set()
             for panel in selected_panels:
                 sequence_number = self._next_bdf_sequence_number(
                     output_dir,
                     cell_name,
+                    cas_id,
                     out_type,
                     used_sequence_numbers,
                 )
                 used_sequence_numbers.add(sequence_number)
-                filename_stem = self._bdf_export_stem(cell_name, sequence_number)
+                filename_stem = self._bdf_export_stem(cell_name, cas_id, sequence_number)
                 written_files.extend(
                     export_measurement_to_bdf_files(
                         panel.graph.measurement,
@@ -1008,11 +1229,15 @@ class main_window(QMainWindow):
 
         method = dialog.method
         method_label = dialog.method_label
-        self.start_measurement(panel, method, method_label)
+        self.start_measurement(panel, method, method_label, dialog.temperature_settings)
 
-    def start_measurement(self, panel: graph_panel, method, method_label: str):
+    def start_measurement(self, panel: graph_panel, method, method_label: str, temperature_settings=None):
         thread = QThread(self)
-        worker = measurement_worker(panel.instrument, method)
+        worker = measurement_worker(
+            panel.instrument,
+            method,
+            temperature_settings=temperature_settings,
+        )
         worker.moveToThread(thread)
         self.worker_panels[worker] = panel
         self.worker_method_labels[worker] = method_label
@@ -1043,11 +1268,15 @@ class main_window(QMainWindow):
         self.stopping_panels.add(panel)
         panel.set_status_text("Stopping")
         self.statusBar().showMessage(f"Stopping measurement on {panel.base_title}...", 0)
-        QMetaObject.invokeMethod(worker, "abort", Qt.ConnectionType.QueuedConnection)
+        worker.abort()
 
     def handle_worker_progress(self, worker, callback_data):
         panel = self.worker_panels.get(worker)
         if panel is None or panel not in self.panels:
+            return
+        if isinstance(callback_data, TemperatureProgress):
+            panel.set_status_text(callback_data.message)
+            self.statusBar().showMessage(f"{panel.base_title}: {callback_data.message}", 0)
             return
         panel.graph.plot_live_data(callback_data)
 
@@ -1081,6 +1310,13 @@ class main_window(QMainWindow):
             self.worker_method_labels.pop(worker_to_remove, None)
 
     def on_measurement_finished(self, panel: graph_panel, method_label: str, measurement):
+        if panel in self.stopping_panels:
+            self.stopping_panels.discard(panel)
+            panel.graph.plot_measurement(measurement)
+            panel.set_status_text(None)
+            self.statusBar().showMessage(f"Stopped measurement on {panel.base_title}.", 5000)
+            return
+
         self.stopping_panels.discard(panel)
         panel.graph.plot_measurement(measurement)
         panel.set_status_text(None)
@@ -1127,12 +1363,15 @@ class main_window(QMainWindow):
     def _sanitize_export_name(name: str) -> str:
         cleaned = "".join(character if character.isalnum() else "_" for character in name.strip())
         cleaned = cleaned.strip("_")
-        return cleaned or "channel"
+        return cleaned
 
     @classmethod
-    def _bdf_export_stem(cls, cell_name: str, sequence_number: int) -> str:
+    def _bdf_export_stem(cls, cell_name: str, cas_id: str, sequence_number: int) -> str:
         sanitized_cell_name = cls._sanitize_export_name(cell_name)
+        sanitized_cas_id = cls._sanitize_export_name(cas_id)
         export_date = date.today().strftime("%Y%m%d")
+        if sanitized_cas_id:
+            return f"UU__{sanitized_cell_name}__{sanitized_cas_id}__{export_date}_{sequence_number:03d}"
         return f"UU__{sanitized_cell_name}__{export_date}_{sequence_number:03d}"
 
     @classmethod
@@ -1140,6 +1379,7 @@ class main_window(QMainWindow):
         cls,
         output_dir: Path,
         cell_name: str,
+        cas_id: str,
         export_type: str,
         used_sequence_numbers: set[int],
     ) -> int:
@@ -1147,6 +1387,7 @@ class main_window(QMainWindow):
         while sequence_number in used_sequence_numbers or cls._bdf_sequence_exists(
             output_dir,
             cell_name,
+            cas_id,
             sequence_number,
             export_type,
         ):
@@ -1158,10 +1399,11 @@ class main_window(QMainWindow):
         cls,
         output_dir: Path,
         cell_name: str,
+        cas_id: str,
         sequence_number: int,
         export_type: str,
     ) -> bool:
-        stem = cls._bdf_export_stem(cell_name, sequence_number)
+        stem = cls._bdf_export_stem(cell_name, cas_id, sequence_number)
         return any(output_dir.glob(f"{stem}*.{export_type}"))
 
     def _panel_export_stem(self, panel: graph_panel) -> str:
