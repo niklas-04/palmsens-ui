@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pypalmsens as ps
 
-from measurement_data import LogicalMeasurementRun
+from src.measurement_data import LogicalMeasurementRun
 
 # DEBUG
 @dataclass(slots=True)

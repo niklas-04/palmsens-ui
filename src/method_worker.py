@@ -6,9 +6,9 @@ import time
 from PySide6.QtCore import QObject, Signal, Slot
 import pypalmsens as ps
 
-from aurora_app.aurora_methods import AuroraStepwiseMethod
-from measurement_data import LogicalMeasurementRun, MeasurementSegment
-from temperature_chamber.temperature_controller import TemperatureController, TemperatureProgress
+from src.aurora_app.aurora_methods import AuroraStepwiseMethod
+from src.measurement_data import LogicalMeasurementRun, MeasurementSegment
+from src.temperature_chamber.temperature_controller import TemperatureController, TemperatureProgress
 
 
 class measurement_worker(QObject):

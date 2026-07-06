@@ -18,5 +18,5 @@ dependencies = [
 [tool.uv.sources]
 aurora-unicycler = { path = "./aurora-unicycler", editable = true }
 
-[tool.setuptools]
-py-modules = ["main", "ps_helpers", "bdf_export", "measurement_data", "method_config", "method_worker", "aurora_builder", "aurora_methods", "aurora_method_builder_app", "app_style"]
+[tool.setuptools.packages.find]
+include = ["src*"]

@@ -2,9 +2,12 @@ import sys
 from datetime import date
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pypalmsens as ps
-from app_style import APP_STYLESHEET
-from aurora_app.aurora_methods import (
+from src.app_style import APP_STYLESHEET
+from src.aurora_app.aurora_methods import (
     AURORA_ADDITIONAL_MEASUREMENT_OPTIONS,
     AURORA_DEVICE_MEASUREMENT_TYPES,
     AURORA_DEVICE_OPTIONS,
@@ -13,7 +16,7 @@ from aurora_app.aurora_methods import (
     load_aurora_package,
 )
 
-from bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
+from src.bdf_export import BdfExportError, bdf_optional_quantity_choices, export_measurement_to_bdf_files
 from PySide6.QtCore import QObject, QSize, Signal, Slot, Qt, QThread, QProcess
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -42,11 +45,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from graph import graph_panel
-from method_config import METHOD_ORDER, METHOD_SPECS, build_method
-from method_worker import measurement_worker
-from temperature_chamber.temperature_controller import TemperatureProgress, TemperatureSettings
-import device_helpers as pslib
+from src.graph import graph_panel
+from src.method_config import METHOD_ORDER, METHOD_SPECS, build_method
+from src.method_worker import measurement_worker
+from src.temperature_chamber.temperature_controller import TemperatureProgress, TemperatureSettings
+import src.device_helpers as pslib
 
 PANEL_COLUMNS = 3
 AURORA_APP_SUBDIRECTORY = "aurora_app"
@@ -490,7 +493,7 @@ class method_configuration_dialog(QDialog):
         self.temperature_timeout_edit.setPlaceholderText("Blank = no timeout")
         self.temperature_form.addRow("Timeout (s)", self.temperature_timeout_edit)
 
-        default_log_dir = Path(__file__).with_name("out2") / "temp_logs"
+        default_log_dir = Path(__file__).parent.parent / "out2" / "temp_logs"
         self.temperature_log_dir_edit = QLineEdit(str(default_log_dir), self.package_widget)
         self.temperature_form.addRow("Log directory", self.temperature_log_dir_edit)
 
@@ -1019,10 +1022,10 @@ class main_window(QMainWindow):
         self.disconnect_action.setEnabled(is_connected)
 
     def open_aurora_builder(self):
-        app_dir = Path(__file__).parent
-        builder_module = f"{AURORA_APP_SUBDIRECTORY}.aurora_method_builder_app"
-        builder_path = app_dir / AURORA_APP_SUBDIRECTORY / "aurora_method_builder_app.py"
-        started = QProcess.startDetached(sys.executable, ["-m", builder_module], str(app_dir))
+        project_dir = Path(__file__).parent.parent
+        builder_module = f"src.{AURORA_APP_SUBDIRECTORY}.aurora_method_builder_app"
+        builder_path = project_dir / "src" / AURORA_APP_SUBDIRECTORY / "aurora_method_builder_app.py"
+        started = QProcess.startDetached(sys.executable, ["-m", builder_module], str(project_dir))
         if not started:
             QMessageBox.warning(
                 self,

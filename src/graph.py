@@ -19,7 +19,7 @@ import pyqtgraph as pg
 import re
 import numpy as np
 
-from measurement_data import DatasetView, dataset_arrays, default_axis_indexes, measurement_arrays, measurement_dataset_views
+from src.measurement_data import DatasetView, dataset_arrays, default_axis_indexes, measurement_arrays, measurement_dataset_views
 
 def _canonical_measurement_name(name):
     if name.startswith("Applied"):

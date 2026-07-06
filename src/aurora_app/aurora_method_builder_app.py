@@ -4,6 +4,9 @@ import json
 import sys
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,9 +23,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_style import APP_STYLESHEET
-from aurora_app.aurora_builder import AuroraVisualBuilder
-from aurora_app.aurora_methods import (
+from src.app_style import APP_STYLESHEET
+from src.aurora_app.aurora_builder import AuroraVisualBuilder
+from src.aurora_app.aurora_methods import (
     build_aurora_package,
     load_aurora_package,
 )

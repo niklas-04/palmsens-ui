@@ -6,7 +6,7 @@ from pathlib import Path
 import bdf
 import pandas as pd
 
-from measurement_data import dataset_arrays, measurement_dataset_views
+from src.measurement_data import dataset_arrays, measurement_dataset_views
 
 
 _GROUPED_KEY_PATTERN = re.compile(r"^(?P<base>.+?)_(?P<group>\d+)$")

@@ -122,7 +122,7 @@ class AuroraStepwiseMethod:
 
 def build_aurora_protocol(source_mode: str, source_payload: dict[str, Any] | str):
     if source_mode == "aurora_visual":
-        from aurora_app.aurora_builder import build_protocol_from_visual_data
+        from src.aurora_app.aurora_builder import build_protocol_from_visual_data
 
         if not isinstance(source_payload, dict):
             raise ValueError("Aurora visual payload must be a dictionary.")
