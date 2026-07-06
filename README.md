@@ -16,11 +16,11 @@ Some of the functionality includes:
 - Handles time-series data and EIS data separately, while preserving shared step metadata such as step id, step type, and execution index.
 - Exports measurement results based on Battery Data Format.
 
-## Notes
+## Temperature Chamber
 
-The methods made in the Aurora method builder may contain non-Palmsens native steps, currently only being setting temperature. The core app keeps those as neutral external actions. The generic worker can accept an optional `external_step_executor`, but it does not import Arduino, serial, or chamber-specific code directly.
+Temperature steps are non-Palsmens native steps and are handled directly by the app through `temperature_chamber/temperature_controller.py`. Enable the Arduino temperature chamber in the Aurora package run dialog, choose the serial settings, then run the method normally.
 
-This keeps the normal PalmSens app portable while still leaving a hook for local lab hardware integration, such as a custom temperature chamber.
+Leave the serial port blank to auto-detect Arduino/CH340 USB serial devices, or enter a port such as `COM31`.
 
 ## Running
 Install the project dependencies:
@@ -34,3 +34,4 @@ then run:
 ```powershell
 python main.py
 ```
+Note: if using a local aurora package, put the library in the top-most directory.
