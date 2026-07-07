@@ -7,6 +7,8 @@ This project mainly builds upon three seperate related works:
 - Aurora Unicycler (https://github.com/EmpaEConversion/aurora-unicycler)
 - Battery Data Format (https://github.com/battery-data-alliance/battery-data-format)
 
+Note: The system introduces two new steps in measurements that aurora unicycler currently does not implement (Wait, Temperature), and therefore relies on a fork (https://github.com/Laswer5/aurora-unicycler).
+
 Some of the functionality includes:
 
 - Connecting to PalmSens instruments through PyPalmSens.
@@ -34,4 +36,3 @@ then run:
 ```powershell
 make run
 ```
-Note: if using a local aurora package, put the library in the top-most directory.
