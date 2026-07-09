@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 import pypalmsens as ps
 
 from src.aurora_app.aurora_methods import AuroraStepwiseMethod
-from src.measurement_data import LogicalMeasurementRun, MeasurementSegment
+from src.measurement_data import LogicalMeasurementRun, MeasurementSegment, TemperatureSample
 from src.temperature_chamber.temperature_controller import TemperatureController, TemperatureProgress
 
 
@@ -67,10 +67,15 @@ class measurement_worker(QObject):
         run = LogicalMeasurementRun(stepwise_method.name)
         run_start = time.monotonic()
         temperature_controller = None
+        last_chamber_temperature_c = None
+        last_chamber_setpoint_c = None
 
-        if any(action.is_temperature for action in actions):
+        has_temperature_actions = any(action.is_temperature for action in actions)
+        if has_temperature_actions:
             if self.temperature_settings is None:
                 raise RuntimeError("This Aurora method contains temperature steps, but the chamber is not enabled.")
+
+        if self.temperature_settings is not None:
             temperature_controller = TemperatureController(self.temperature_settings)
             temperature_controller.connect()
 
@@ -86,7 +91,9 @@ class measurement_worker(QObject):
                     raise RuntimeError("Measurement aborted")
 
                 if action.is_temperature:
-                    await self._execute_temperature_action(temperature_controller, action)
+                    status = await self._execute_temperature_action(temperature_controller, action)
+                    last_chamber_temperature_c = status.temperature_c
+                    last_chamber_setpoint_c = status.setpoint_c
                     continue
 
                 if not action.is_palmsens or action.methodscript is None:
@@ -95,7 +102,32 @@ class measurement_worker(QObject):
                 method = ps.MethodScript(script=action.methodscript)
                 manager.validate_method(method)
                 segment_offset_s = time.monotonic() - run_start
-                measurement = await manager.measure(method, callback=on_data)
+                segment_started_at = time.monotonic()
+                temperature_samples = []
+                poll_stop_event = None
+                poll_task = None
+                if temperature_controller is not None:
+                    poll_stop_event = asyncio.Event()
+                    poll_task = asyncio.create_task(
+                        self._poll_temperature_during_measurement(
+                            temperature_controller,
+                            segment_started_at,
+                            temperature_samples,
+                            poll_stop_event,
+                        )
+                    )
+
+                try:
+                    measurement = await manager.measure(method, callback=on_data)
+                finally:
+                    if poll_stop_event is not None:
+                        poll_stop_event.set()
+                    if poll_task is not None:
+                        await poll_task
+
+                if temperature_samples:
+                    last_chamber_temperature_c = temperature_samples[-1].temperature_c
+                    last_chamber_setpoint_c = temperature_samples[-1].setpoint_c
                 run.add_segment(
                     MeasurementSegment(
                         index=len(run.segments) + 1,
@@ -105,6 +137,9 @@ class measurement_worker(QObject):
                         source_step_index=action.source_step_index,
                         step_type=action.step_type,
                         execution_index=action.execution_index,
+                        chamber_temperature_c=last_chamber_temperature_c,
+                        chamber_setpoint_c=last_chamber_setpoint_c,
+                        chamber_temperature_samples=tuple(temperature_samples),
                     )
                 )
         finally:
@@ -157,6 +192,44 @@ class measurement_worker(QObject):
                 message=f"Temperature stabilized at {status.temperature_c:.2f} C",
             )
         )
+        return status
+
+    async def _poll_temperature_during_measurement(
+        self,
+        temperature_controller,
+        segment_started_at: float,
+        samples: list[TemperatureSample],
+        stop_event: asyncio.Event,
+    ):
+        while not stop_event.is_set():
+            status = await asyncio.to_thread(self._request_temperature_status, temperature_controller)
+            if status is not None:
+                samples.append(
+                    TemperatureSample(
+                        elapsed_s=max(0.0, time.monotonic() - segment_started_at),
+                        temperature_c=status.temperature_c,
+                        setpoint_c=status.setpoint_c,
+                    )
+                )
+                self.progress.emit(
+                    TemperatureProgress(
+                        target_c=status.setpoint_c,
+                        temperature_c=status.temperature_c,
+                        setpoint_c=status.setpoint_c,
+                        stable_for_s=0.0,
+                        message=f"Temperature {status.temperature_c:.2f} C, setpoint {status.setpoint_c:.2f} C",
+                    )
+                )
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=self.temperature_settings.poll_interval_s)
+            except asyncio.TimeoutError:
+                pass
+
+    @staticmethod
+    def _request_temperature_status(temperature_controller):
+        temperature_controller.request_temperature()
+        return temperature_controller.read_status()
 
     @Slot()
     def abort(self):

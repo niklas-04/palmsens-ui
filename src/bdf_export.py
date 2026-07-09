@@ -229,7 +229,7 @@ _BDF_TERMS = (
     _term("step_type", "Step Type", ("mode", "operation_mode"), None, "string"),
     _term("surface_pressure_pa", "Surface Pressure / Pa", ("surface_pressure_pascal", "surface_pressure", "skin_pressure"), _PRESSURE_FACTORS),
     _term("surface_temperature_celsius", "Surface Temperature / degC", ("surface_temperature_degc", "surface_temperature", "skin_temperature"), _TEMPERATURE_FACTORS),
-    _term("temperature_t1_celsius", "Temperature T1 / degC", ("surface_temperature_t1_celsius", "temperature_t1_degc", "temperature_t1", "temperature", "temp", "t1"), _TEMPERATURE_FACTORS),
+    _term("temperature_t1_celsius", "Temperature T1 / degC", ("surface_temperature_t1_celsius", "temperature_t1_degc", "temperature_t1", "temperature", "temp", "t1", "temperature_setpoint_degc", "temperature_setpoint", "chamber_setpoint", "setpoint_celsius", "setpoint_degc", "setpoint"), _TEMPERATURE_FACTORS),
     _term("temperature_t2_celsius", "Temperature T2 / degC", ("surface_temperature_t2_celsius", "temperature_t2_degc", "temperature_t2", "t2"), _TEMPERATURE_FACTORS),
     _term("temperature_t3_celsius", "Temperature T3 / degC", ("surface_temperature_t3_celsius", "temperature_t3_degc", "temperature_t3", "t3"), _TEMPERATURE_FACTORS),
     _term("temperature_t4_celsius", "Temperature T4 / degC", ("surface_temperature_t4_celsius", "temperature_t4_degc", "temperature_t4", "t4"), _TEMPERATURE_FACTORS),

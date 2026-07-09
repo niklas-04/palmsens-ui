@@ -19,6 +19,13 @@ class DatasetView:
 
 
 @dataclass(frozen=True)
+class TemperatureSample:
+    elapsed_s: float
+    temperature_c: float
+    setpoint_c: float
+
+
+@dataclass(frozen=True)
 class MeasurementSegment:
     index: int
     label: str
@@ -27,6 +34,9 @@ class MeasurementSegment:
     source_step_index: int | None = None
     step_type: str | None = None
     execution_index: int | None = None
+    chamber_temperature_c: float | None = None
+    chamber_setpoint_c: float | None = None
+    chamber_temperature_samples: tuple[TemperatureSample, ...] = ()
 
 
 @dataclass
@@ -264,6 +274,8 @@ def _unify_segment_datasets(
     step_ids: list[Any] = []
     execution_indexes: list[int] = []
     step_types: list[str] = []
+    chamber_temperatures: list[float] = []
+    chamber_setpoints: list[float] = []
     total_length = 0
 
     for segment, dataset in sources:
@@ -275,6 +287,7 @@ def _unify_segment_datasets(
         if row_count <= 0:
             continue
 
+        row_times_s = _dataset_row_times(arrays, row_count)
         source_values: dict[tuple[str, str, str, str], list[Any]] = {}
         source_priorities: dict[tuple[str, str, str, str], int] = {}
         for array_index, data_array in enumerate(arrays):
@@ -302,6 +315,8 @@ def _unify_segment_datasets(
         execution_indexes.extend([(segment.execution_index or segment.index)] * row_count)
         step_ids.extend([segment.source_step_index if segment.source_step_index is not None else segment.index] * row_count)
         step_types.extend([segment.step_type or ""] * row_count)
+        chamber_temperatures.extend(_temperature_values_for_rows(segment, row_count, row_times_s, "temperature"))
+        chamber_setpoints.extend(_temperature_values_for_rows(segment, row_count, row_times_s, "setpoint"))
         total_length += row_count
 
     if total_length == 0:
@@ -326,6 +341,26 @@ def _unify_segment_datasets(
             UnifiedDataArray("step_type", "", tuple(step_types), type="String", quantity="step_type"),
         ]
     )
+    if _has_recorded_values(chamber_temperatures):
+        arrays.append(
+            UnifiedDataArray(
+                "chamber_temperature",
+                "degC",
+                tuple(chamber_temperatures),
+                type="Temperature",
+                quantity="ambient_temperature_celsius",
+            )
+        )
+    if _has_recorded_values(chamber_setpoints):
+        arrays.append(
+            UnifiedDataArray(
+                "chamber_setpoint",
+                "degC",
+                tuple(chamber_setpoints),
+                type="Temperature",
+                quantity="temperature_t1_celsius",
+            )
+        )
     return UnifiedDataset(title, tuple(arrays))
 
 
@@ -359,6 +394,13 @@ def _dataset_row_count(arrays: list[Any]) -> int:
     return max(lengths, default=0)
 
 
+def _dataset_row_times(arrays: list[Any], length: int) -> list[float] | None:
+    for data_array in arrays:
+        if _is_time_array(data_array):
+            return [_to_optional_float(value) for value in _fit_values(_array_values(data_array), length)]
+    return None
+
+
 def _array_values(data_array) -> list[Any]:
     to_numpy = getattr(data_array, "to_numpy", None)
     if callable(to_numpy):
@@ -382,6 +424,81 @@ def _fit_values(values: list[Any], length: int) -> list[Any]:
 
 def _missing_values(length: int) -> list[float]:
     return [math.nan] * length
+
+
+def _repeat_optional_float(value: float | None, length: int) -> list[float]:
+    if value is None:
+        return _missing_values(length)
+    return [float(value)] * length
+
+
+def _has_recorded_values(values: list[float]) -> bool:
+    return any(not math.isnan(value) for value in values)
+
+
+def _temperature_values_for_rows(
+    segment: MeasurementSegment,
+    length: int,
+    row_times_s: list[float] | None,
+    value_name: str,
+) -> list[float]:
+    samples = tuple(getattr(segment, "chamber_temperature_samples", ()) or ())
+    if samples:
+        if row_times_s is not None and _has_varying_numeric_values(row_times_s):
+            return [_nearest_temperature_sample_value(samples, row_time_s, value_name) for row_time_s in row_times_s]
+        return _spread_temperature_samples(samples, length, value_name)
+
+    fallback_value = (
+        getattr(segment, "chamber_temperature_c", None)
+        if value_name == "temperature"
+        else getattr(segment, "chamber_setpoint_c", None)
+    )
+    return _repeat_optional_float(fallback_value, length)
+
+
+def _nearest_temperature_sample_value(
+    samples: tuple[TemperatureSample, ...],
+    row_time_s: float,
+    value_name: str,
+) -> float:
+    if math.isnan(row_time_s):
+        return math.nan
+    sample = min(samples, key=lambda item: abs(item.elapsed_s - row_time_s))
+    return _temperature_sample_value(sample, value_name)
+
+
+def _spread_temperature_samples(
+    samples: tuple[TemperatureSample, ...],
+    length: int,
+    value_name: str,
+) -> list[float]:
+    if not samples:
+        return _missing_values(length)
+    if length <= 1:
+        return [_temperature_sample_value(samples[-1], value_name)] if length == 1 else []
+    if len(samples) == 1:
+        return [_temperature_sample_value(samples[0], value_name)] * length
+
+    return [
+        _temperature_sample_value(samples[round(row_index * (len(samples) - 1) / (length - 1))], value_name)
+        for row_index in range(length)
+    ]
+
+
+def _temperature_sample_value(sample: TemperatureSample, value_name: str) -> float:
+    return float(sample.temperature_c if value_name == "temperature" else sample.setpoint_c)
+
+
+def _has_varying_numeric_values(values: list[float]) -> bool:
+    numeric_values = [value for value in values if not math.isnan(value)]
+    return len(numeric_values) > 1 and any(value != numeric_values[0] for value in numeric_values[1:])
+
+
+def _to_optional_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return math.nan
 
 
 def _offset_numeric_values(values: list[Any], offset: float) -> list[Any]:
