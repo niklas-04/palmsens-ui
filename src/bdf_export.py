@@ -321,7 +321,7 @@ def export_measurement_to_bdf_files(
         raise BdfExportError("Measurement does not contain any exportable dataset groups.")
 
     combined_dataframes = _sort_bdf_dataframe(pd.concat(dataframes, ignore_index=True))
-    combined_stem = f"{filename_stem}_total" if export_separate else filename_stem
+    combined_stem = filename_stem
     total_path = _unique_output_path(output_dir, combined_stem, export_type)
     _write_dataframe(total_path, combined_dataframes, export_type)
     written_paths.append(total_path)
@@ -872,12 +872,21 @@ def _write_dataframe(path: Path, dataframe: pd.DataFrame, export_type: str):
 
 
 def _unique_output_path(output_dir: Path, stem: str, export_type: str) -> Path:
-    candidate = output_dir / f"{stem}.{export_type}"
+    normalized_stem = _without_bdf_suffix(stem)
+    candidate = output_dir / _bdf_filename(normalized_stem, export_type)
     suffix = 2
     while candidate.exists():
-        candidate = output_dir / f"{stem}_{suffix}.{export_type}"
+        candidate = output_dir / _bdf_filename(f"{normalized_stem}_{suffix}", export_type)
         suffix += 1
     return candidate
+
+
+def _bdf_filename(stem: str, export_type: str) -> str:
+    return f"{stem}.bdf.{export_type}"
+
+
+def _without_bdf_suffix(stem: str) -> str:
+    return stem[:-4] if stem.casefold().endswith(".bdf") else stem
 
 
 def _sanitize_stem(value: str) -> str:

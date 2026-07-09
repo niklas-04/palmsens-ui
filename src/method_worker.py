@@ -115,6 +115,8 @@ class measurement_worker(QObject):
             raise RuntimeError("Aurora step-wise execution completed without measurement data.")
         return run
 
+    # TODO: current architecture hardwires temperature chamber
+    # solution: possibly switch to general implementation and non native steps as  modules
     async def _execute_temperature_action(self, temperature_controller, action):
         if temperature_controller is None:
             raise RuntimeError("Temperature chamber is not configured.")

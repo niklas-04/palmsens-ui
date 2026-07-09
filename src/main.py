@@ -1371,8 +1371,8 @@ class main_window(QMainWindow):
         sanitized_cas_id = cls._sanitize_export_name(cas_id)
         export_date = date.today().strftime("%Y%m%d")
         if sanitized_cas_id:
-            return f"UU__{sanitized_cell_name}__{sanitized_cas_id}__{export_date}_{sequence_number:03d}"
-        return f"UU__{sanitized_cell_name}__{export_date}_{sequence_number:03d}"
+            return f"UU_{sanitized_cell_name}_{sanitized_cas_id}_{export_date}_{sequence_number:04d}"
+        return f"UU_{sanitized_cell_name}_{export_date}_{sequence_number:04d}"
 
     @classmethod
     def _next_bdf_sequence_number(
@@ -1404,7 +1404,7 @@ class main_window(QMainWindow):
         export_type: str,
     ) -> bool:
         stem = cls._bdf_export_stem(cell_name, cas_id, sequence_number)
-        return any(output_dir.glob(f"{stem}*.{export_type}"))
+        return any(output_dir.glob(f"{stem}*.bdf.{export_type}"))
 
     def _panel_export_stem(self, panel: graph_panel) -> str:
         instrument = panel.instrument
