@@ -10,31 +10,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QMessageBox,
     QFrame,
-    QSizePolicy,
-    QCheckBox
+    QSizePolicy
 )
 from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QAction
 import pyqtgraph as pg
-import re
 import numpy as np
 
 from src.measurement_data import DatasetView, dataset_arrays, default_axis_indexes, measurement_arrays, measurement_dataset_views
-
-def _canonical_measurement_name(name):
-    if name.startswith("Applied"):
-        base_name = name.removeprefix("Applied")
-        if base_name in {"Current", "Potential", "Voltage"}:
-            return base_name
-    return name
-
-def _axis_group_name(data_array):
-    name = _get_name(data_array, "")
-    stripped_name = re.sub(r"\d+_\d+$", "", str(name))
-    canonical_name = _canonical_measurement_name(stripped_name)
-    if _is_metadata_array_name(canonical_name):
-        return None
-    return canonical_name or None
 
 def _is_metadata_array_name(name):
     return str(name) in {"segment_index", "step_id", "execution_index", "step_type"}
@@ -99,22 +82,6 @@ class graph_widget(QWidget):
             self.dataset_view_id = dataset_view.id
 
         if selection:
-            if selection["grouped"]:
-                left_x, left_y = self._concat_grouped_arrays(arrays, selection["x"], selection["left_y"])
-                if selection["right_y"] is None:
-                    self._plot_arrays(left_x, left_y, selection["x"], selection["left_y"])
-                    return
-                right_x, right_y = self._concat_grouped_arrays(arrays, selection["x"], selection["right_y"])
-                self._plot_dual_arrays(
-                    left_x,
-                    left_y,
-                    right_x,
-                    right_y,
-                    selection["x"],
-                    selection["left_y"],
-                    selection["right_y"],
-                )
-                return
             self.x_index = selection["x"]
             self.y_index = selection["left_y"]
             if selection["right_y"] is not None:
@@ -286,54 +253,6 @@ class graph_widget(QWidget):
         self.right_view.setGeometry(self.plot_item.vb.sceneBoundingRect())
         self.right_view.linkedViewChanged(self.plot_item.vb, self.right_view.XAxis)
     
-    @staticmethod
-    def _concat_grouped_arrays(arrays, name_arr_1, name_arr_2):
-        pattern = re.compile(r"^(?P<measurement>[A-Za-z_]+?)(?P<measurement_number>\d+)_(?P<group>\d+)$")
-
-        groups = {}
-        for arr in arrays:
-            name = _get_name(arr, "")
-            match = pattern.match(name)
-            if not match:
-                continue
-
-            measurement = _canonical_measurement_name(match.group("measurement"))
-            if measurement not in {name_arr_1, name_arr_2}:
-                continue
-
-            group = int(match.group("group"))
-            grouped_arrays = groups.setdefault(group, {})
-            if measurement not in grouped_arrays or not match.group("measurement").startswith("Applied"):
-                grouped_arrays[measurement] = arr
-
-        concat_arr1 = []
-        concat_arr2 = []
-        for group in sorted(groups):
-            grouped_arrays = groups[group]
-            if name_arr_1 not in grouped_arrays or name_arr_2 not in grouped_arrays:
-                continue
-            x_values = np.asarray(grouped_arrays[name_arr_1].to_numpy()).ravel()
-            y_values = np.asarray(grouped_arrays[name_arr_2].to_numpy()).ravel()
-            if x_values.shape != y_values.shape:
-                continue
-            concat_arr1.extend(x_values)
-            concat_arr2.extend(y_values)
-
-        if concat_arr1 and concat_arr2:
-            return np.asarray(concat_arr1), np.asarray(concat_arr2)
-
-        x_array = next((arr for arr in arrays if _axis_group_name(arr) == name_arr_1), None)
-        y_array = next((arr for arr in arrays if _axis_group_name(arr) == name_arr_2), None)
-        if x_array is None or y_array is None:
-            return np.asarray([]), np.asarray([])
-
-        x_values = np.asarray(x_array.to_numpy()).ravel()
-        y_values = np.asarray(y_array.to_numpy()).ravel()
-        if x_values.shape != y_values.shape:
-            return np.asarray([]), np.asarray([])
-        return x_values, y_values
-
-
 class axis_selection_dialog(QDialog):
     def __init__(
         self,
@@ -351,7 +270,6 @@ class axis_selection_dialog(QDialog):
         self.x_combo = QComboBox(self)
         self.left_y_combo = QComboBox(self)
         self.right_y_combo = QComboBox(self)
-        self.checkbox = QCheckBox(self)
         self.dataset_views = dataset_views
         self.arrays = []
         self.current_x = current_x
@@ -362,13 +280,11 @@ class axis_selection_dialog(QDialog):
         self.rebuild_axis_choice() 
         
         self.dataset_combo.currentIndexChanged.connect(self.rebuild_axis_choice)
-        self.checkbox.toggled.connect(self.rebuild_axis_choice)
 
         layout.addRow("Dataset", self.dataset_combo)
         layout.addRow("X axis", self.x_combo)
         layout.addRow("Left Y axis", self.left_y_combo)
         layout.addRow("Right Y axis", self.right_y_combo)
-        layout.addRow("Group", self.checkbox)
         
 
         buttons = QDialogButtonBox(
@@ -396,37 +312,25 @@ class axis_selection_dialog(QDialog):
         dataset_view = self.selected_dataset_view()
         self.arrays = dataset_arrays(dataset_view.dataset) if dataset_view is not None else []
         
-        if self.checkbox.isChecked():
-            measurement_names = self._unique_measurements()
-            self.right_y_combo.addItem("None", None)
-            for meas_name in measurement_names:
-                self.x_combo.addItem(meas_name, meas_name)
-                self.left_y_combo.addItem(meas_name, meas_name)
-                self.right_y_combo.addItem(meas_name, meas_name)
-            self._set_combo_to_data(self.x_combo, "Time")
-            self._set_combo_to_data(self.left_y_combo, "Potential")
-            self._set_combo_to_data(self.right_y_combo, "Current")
+        self.right_y_combo.addItem("None", None)
+        for index, data_array in enumerate(self.arrays):
+            if _is_metadata_array_name(_get_name(data_array, "")):
+                continue
+            label = self._format_array_label(index, data_array)
+            self.x_combo.addItem(label, index)
+            self.left_y_combo.addItem(label, index)
+            self.right_y_combo.addItem(label, index)
+        if self.dataset_combo.currentData() == self.current_dataset_id:
+            x_index = self.current_x
+            y_index = self.current_y
         else:
-            self.right_y_combo.addItem("None", None)
-            for index, data_array in enumerate(self.arrays):
-                if _is_metadata_array_name(_get_name(data_array, "")):
-                    continue
-                label = self._format_array_label(index, data_array)
-                self.x_combo.addItem(label, index)
-                self.left_y_combo.addItem(label, index)
-                self.right_y_combo.addItem(label, index)
-            if self.dataset_combo.currentData() == self.current_dataset_id:
-                x_index = self.current_x
-                y_index = self.current_y
-            else:
-                x_index, y_index = default_axis_indexes(self.arrays)
-            self._set_combo_to_data(self.x_combo, x_index)
-            self._set_combo_to_data(self.left_y_combo, y_index)
+            x_index, y_index = default_axis_indexes(self.arrays)
+        self._set_combo_to_data(self.x_combo, x_index)
+        self._set_combo_to_data(self.left_y_combo, y_index)
         
     def selected_axes(self):
         return {
             "dataset_id": self.dataset_combo.currentData(),
-            "grouped": self.checkbox.isChecked(),
             "x": self.x_combo.currentData(),
             "left_y": self.left_y_combo.currentData(),
             "right_y": self.right_y_combo.currentData(),
@@ -457,22 +361,6 @@ class axis_selection_dialog(QDialog):
         if details:
             return f"{index}: {name} ({', '.join(details)})"
         return f"{index}: {name}"
-
-    def _unique_measurements(self):
-        pattern = re.compile(r"^(?P<measurement>[A-Za-z_]+?)(?P<measurement_number>\d+)_(?P<group>\d+)$")
-        names = []
-
-        for data_array in self.arrays:
-            name = _get_name(data_array, "")
-            match = pattern.match(name)
-            if match:
-                names.append(_canonical_measurement_name(match.group("measurement")))
-                continue
-            group_name = _axis_group_name(data_array)
-            if group_name:
-                names.append(group_name)
-
-        return sorted(set(names))
 
 class graph_panel(QFrame):
     run_requested = Signal()
