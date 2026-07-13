@@ -24,6 +24,16 @@ Temperature steps are non-Palsmens native steps and are handled directly by the 
 
 Leave the serial port blank to auto-detect Arduino USB serial devices, or enter a port such as `COM31`.
 
+# Method defintion and packaging
+Currently the aurora module exists as it own system. Defining a method creates a psmethod file which contains the following fields:
+
+- format: Fixed identifier
+- version: Used to avoid bugs with old psmethods being ran
+- name: user-entered method name
+- source_mode: One of three values depending on how the psmethod was created: aurora_visual, aurora_json, aurora_python
+- source_payload: Editable source representation
+- protocol_json: normalized Aurora Unicycler protocol produced by CyclingProtocol.to_dict() (see aurora unicycler)
+
 ## Running
 Install the project dependencies:
 
