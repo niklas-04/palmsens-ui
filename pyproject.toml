@@ -12,11 +12,13 @@ dependencies = [
 	"pandas",
 	"batterydf",
 	"aurora-unicycler",
+	"palmsens-aurora-workflow",
 	"pyserial"
 ]
 
 [tool.uv.sources]
 aurora-unicycler = { path = "./aurora-unicycler", editable = true }
+palmsens-aurora-workflow = { path = "./shared/palmsens-aurora-workflow", editable = true }
 
 [tool.setuptools.packages.find]
 include = ["src*"]

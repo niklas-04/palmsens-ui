@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "palmsens-aurora-workflow"
+version = "0.1.0"
+description = "Shared Aurora protocol compilation and PalmSens workflow planning"
+requires-python = ">=3.10"
+dependencies = [
+    "aurora-unicycler",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
