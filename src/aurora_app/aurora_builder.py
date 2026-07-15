@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -85,6 +86,7 @@ class BuilderUnitOption:
     label: str
     scale_to_aurora: float = 1.0
     offset_to_aurora: float = 0.0
+    # lets one ui field target different Aurora fields based on its selected unit.
     aurora_field: str | None = None
 
     def to_aurora(self, value: float) -> float:
@@ -523,35 +525,6 @@ STEP_ORDER = (
 )
 
 
-def _migrate_legacy_eis_amplitude(step_type: str, raw_values: dict[str, Any]) -> dict[str, Any]:
-    if step_type != "impedance_spectroscopy" or "amplitude" in raw_values:
-        return raw_values
-    if "amplitude_V" not in raw_values and "amplitude_mA" not in raw_values:
-        return raw_values
-
-    values = dict(raw_values)
-    mode = _as_text(values.get("eis_mode"))
-    use_current = mode == "current" or (
-        mode != "voltage"
-        and bool(_as_text(values.get("amplitude_mA")))
-        and not _as_text(values.get("amplitude_V"))
-    )
-    legacy_key = "amplitude_mA" if use_current else "amplitude_V"
-    default_unit = "mA" if use_current else "V"
-    values["amplitude"] = values.get(legacy_key, "")
-    values["amplitude_unit"] = values.get(f"{legacy_key}_unit", default_unit)
-    legacy_keys = (
-        "eis_mode",
-        "amplitude_V",
-        "amplitude_V_unit",
-        "amplitude_mA",
-        "amplitude_mA_unit",
-    )
-    for key in legacy_keys:
-        values.pop(key, None)
-    return values
-
-
 def default_visual_builder_data() -> dict[str, Any]:
     return {
         "record": {"time_s": "10", "voltage_V": "0.01", "current_mA": ""},
@@ -659,7 +632,6 @@ def build_protocol_from_visual_data(
         spec = STEP_SPECS.get(step_type)
         if spec is None:
             raise ValueError(f"Unsupported Aurora step type: {step_type}")
-        raw_step = _migrate_legacy_eis_amplitude(step_type, raw_step)
         if spec.field_choice is not None:
             raw_step = spec.field_choice.selected_values(raw_step)
         params = _clean_none_values(_parse_fields(spec.fields, raw_step))
@@ -690,10 +662,13 @@ class AuroraStepCard(QFrame):
         self.field_display_widgets: dict[str, QWidget] = {}
         self.field_labels: dict[QWidget, QLabel] = {}
         self.field_choice_widget: QComboBox | None = None
+        self.field_choice_stack: QStackedWidget | None = None
+        self.field_choice_label: QLabel | None = None
         self.field_position = 0
         self._expanded = True
         self.setObjectName("auroraStepCard")
         self.setProperty("stepType", step_type)
+        self.setProperty("selected", False)
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
@@ -766,7 +741,6 @@ class AuroraStepCard(QFrame):
 
     def _build_generic_fields(self, raw_values: dict[str, Any]):
         spec = STEP_SPECS[self.step_type]
-        raw_values = _migrate_legacy_eis_amplitude(self.step_type, raw_values)
         if spec.field_choice is not None:
             self.field_choice_widget = QComboBox(self)
             for option in spec.field_choice.options:
@@ -775,6 +749,7 @@ class AuroraStepCard(QFrame):
             self.field_choice_widget.setCurrentIndex(self.field_choice_widget.findData(selected))
             self._add_compact_field(spec.field_choice.label, self.field_choice_widget)
 
+        editors: list[tuple[BuilderFieldSpec, QWidget]] = []
         for field in spec.fields:
             value_widget, display_widget, unit_widget = _create_field_editor(
                 field, raw_values, self, self._on_field_changed
@@ -783,11 +758,21 @@ class AuroraStepCard(QFrame):
             self.field_display_widgets[field.key] = display_widget
             if unit_widget is not None:
                 self.unit_widgets[field.key] = unit_widget
-            self._add_compact_field(field.label, display_widget)
+            editors.append((field, display_widget))
 
-        if self.field_choice_widget is not None:
+        choice_fields: set[str] = set()
+        if spec.field_choice is not None and self.field_choice_widget is not None:
+            choice_fields = {option.field_key for option in spec.field_choice.options}
+            self.field_choice_stack = QStackedWidget(self)
+            for option in spec.field_choice.options:
+                self.field_choice_stack.addWidget(self.field_display_widgets[option.field_key])
+            self.field_choice_label = self._add_compact_field("", self.field_choice_stack)
             self.field_choice_widget.currentIndexChanged.connect(self._on_field_choice_changed)
             self._update_field_choice_visibility()
+
+        for field, display_widget in editors:
+            if field.key not in choice_fields:
+                self._add_compact_field(field.label, display_widget)
 
     def _build_loop_fields(self, raw_values: dict[str, Any]):
         self.loop_target_mode = QComboBox(self)
@@ -808,11 +793,14 @@ class AuroraStepCard(QFrame):
             self.loop_target_tag.setCurrentIndex(0)
             self.loop_target_tag.setEditText(initial_tag)
         self.loop_target_tag.currentTextChanged.connect(self._on_field_changed)
-        self._add_compact_field("Tag target", self.loop_target_tag)
 
         self.loop_target_step = QLineEdit(_as_text(raw_values.get("loop_to_step", "")), self)
         self.loop_target_step.textChanged.connect(self._on_field_changed)
-        self._add_compact_field("Step target", self.loop_target_step)
+
+        self.loop_target_stack = QStackedWidget(self)
+        self.loop_target_stack.addWidget(self.loop_target_tag)
+        self.loop_target_stack.addWidget(self.loop_target_step)
+        self.loop_target_value_label = self._add_compact_field("Tag target", self.loop_target_stack)
 
         self.loop_cycle_count = QLineEdit(_as_text(raw_values.get("cycle_count", "10")), self)
         self.loop_cycle_count.textChanged.connect(self._on_field_changed)
@@ -820,7 +808,7 @@ class AuroraStepCard(QFrame):
 
         self._on_loop_mode_changed()
 
-    def _add_compact_field(self, label_text: str, widget: QWidget):
+    def _add_compact_field(self, label_text: str, widget: QWidget) -> QLabel:
         label = QLabel(label_text, self.form_widget)
         label.setObjectName("auroraCompactFieldLabel")
         column_pair = self.field_position % 2
@@ -832,17 +820,14 @@ class AuroraStepCard(QFrame):
         self.form_layout.setColumnStretch(field_column, 1)
         self.field_labels[widget] = label
         self.field_position += 1
+        return label
 
     def _on_loop_mode_changed(self):
         use_tag = self.loop_target_mode.currentData() == "tag"
-        self.loop_target_tag.setVisible(use_tag)
-        self.loop_target_step.setVisible(not use_tag)
-        tag_label = self.field_labels.get(self.loop_target_tag)
-        step_label = self.field_labels.get(self.loop_target_step)
-        if tag_label is not None:
-            tag_label.setVisible(use_tag)
-        if step_label is not None:
-            step_label.setVisible(not use_tag)
+        self.loop_target_stack.setCurrentWidget(
+            self.loop_target_tag if use_tag else self.loop_target_step
+        )
+        self.loop_target_value_label.setText("Tag target" if use_tag else "Step target")
 
     def _on_field_changed(self, *_args):
         self.changed.emit()
@@ -853,15 +838,18 @@ class AuroraStepCard(QFrame):
 
     def _update_field_choice_visibility(self):
         spec = STEP_SPECS[self.step_type]
-        if spec.field_choice is None or self.field_choice_widget is None:
+        if (
+            spec.field_choice is None
+            or self.field_choice_widget is None
+            or self.field_choice_stack is None
+            or self.field_choice_label is None
+        ):
             return
 
         active_field = spec.field_choice.active_field_key(self.field_choice_widget.currentData())
-        for option in spec.field_choice.options:
-            display_widget = self.field_display_widgets[option.field_key]
-            visible = option.field_key == active_field
-            display_widget.setVisible(visible)
-            self.field_labels[display_widget].setVisible(visible)
+        self.field_choice_stack.setCurrentWidget(self.field_display_widgets[active_field])
+        active_spec = next(field for field in spec.fields if field.key == active_field)
+        self.field_choice_label.setText(active_spec.label)
 
     def set_tag_options(self, tags: list[str]):
         if self.step_type != "loop":
@@ -911,8 +899,15 @@ class AuroraStepCard(QFrame):
 
     def set_expanded(self, expanded: bool):
         self._expanded = expanded
+        selection_changed = self.property("selected") != expanded
+        self.setProperty("selected", expanded)
         self.form_widget.setVisible(expanded)
         self.toggle_button.setText("Hide" if expanded else "Edit")
+        if selection_changed:
+            for widget in (self, self.index_label):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+                widget.update()
 
     @property
     def is_expanded(self) -> bool:

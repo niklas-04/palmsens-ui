@@ -103,6 +103,18 @@ QFrame#auroraStepCard[stepType="loop"] {
     border-left: 5px solid #ca8a04;
 }
 
+QFrame#auroraStepCard[selected="true"] {
+    background: #edf6ff;
+    border-top-color: #76a7ce;
+    border-right-color: #76a7ce;
+    border-bottom-color: #76a7ce;
+}
+
+QFrame#auroraStepCard[selected="true"] QLabel#auroraStepIndex {
+    background: #2f6f9f;
+    color: #ffffff;
+}
+
 QLabel#graphPanelTitle {
     color: #1f2a36;
     font-size: 14px;
