@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import aurora_unicycler
 from aurora_unicycler._core import Temperature
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -22,9 +23,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-
 Parser = Callable[[Any], Any]
 SummaryBuilder = Callable[[dict[str, Any]], str]
+FieldValueWidget = QLineEdit | QComboBox
 
 
 def _as_text(value: Any) -> str:
@@ -79,18 +80,47 @@ def parse_bool(raw_value: Any) -> bool:
 
 
 @dataclass(frozen=True)
+class BuilderUnitOption:
+    key: str
+    label: str
+    scale_to_aurora: float = 1.0
+    offset_to_aurora: float = 0.0
+
+    def to_aurora(self, value: float) -> float:
+        return value * self.scale_to_aurora + self.offset_to_aurora
+
+
+@dataclass(frozen=True)
 class BuilderFieldSpec:
     key: str
     label: str
     default: Any
     parser: Parser
     widget_kind: str = "line"
+    unit_options: tuple[BuilderUnitOption, ...] = ()
 
-    def parse(self, raw_value: Any) -> Any:
+    @property
+    def unit_key(self) -> str:
+        return f"{self.key}_unit"
+
+    @property
+    def default_unit(self) -> str:
+        return self.unit_options[0].key if self.unit_options else ""
+
+    def parse(self, raw_value: Any, raw_unit: Any = None) -> Any:
         try:
-            return self.parser(raw_value)
+            value = self.parser(raw_value)
         except ValueError as exc:
             raise ValueError(f"Invalid value for {self.label}: {raw_value}") from exc
+
+        if value is None or not self.unit_options:
+            return value
+
+        unit_key = _as_text(raw_unit) or self.default_unit
+        unit = next((option for option in self.unit_options if option.key == unit_key), None)
+        if unit is None:
+            raise ValueError(f"Unsupported unit for {self.label}: {unit_key}")
+        return unit.to_aurora(value)
 
 
 @dataclass(frozen=True)
@@ -102,19 +132,132 @@ class BuilderStepSpec:
     summary_builder: SummaryBuilder
 
 
+def _unit_field(
+    key: str,
+    label: str,
+    default: Any,
+    parser: Parser,
+    units: tuple[BuilderUnitOption, ...],
+) -> BuilderFieldSpec:
+    return BuilderFieldSpec(key, label, default, parser, unit_options=units)
+
+
+def _set_unit_widget(
+    field: BuilderFieldSpec,
+    widget: QComboBox,
+    raw_values: dict[str, Any],
+) -> None:
+    unit_key = _as_text(raw_values.get(field.unit_key, field.default_unit))
+    widget.setCurrentIndex(max(widget.findData(unit_key), 0))
+
+
+def _create_field_editor(
+    field: BuilderFieldSpec,
+    raw_values: dict[str, Any],
+    parent: QWidget,
+    on_changed: Callable[..., None],
+) -> tuple[FieldValueWidget, QWidget, QComboBox | None]:
+    raw_value = raw_values.get(field.key, field.default)
+    if field.widget_kind == "bool":
+        value_widget = QComboBox(parent)
+        value_widget.addItem("No", False)
+        value_widget.addItem("Yes", True)
+        value_widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
+        value_widget.currentIndexChanged.connect(on_changed)
+    else:
+        value_widget = QLineEdit(_as_text(raw_value), parent)
+        value_widget.textChanged.connect(on_changed)
+
+    if not field.unit_options:
+        return value_widget, value_widget, None
+
+    container = QWidget(parent)
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    layout.addWidget(value_widget, 1)
+
+    unit_widget = QComboBox(container)
+    for option in field.unit_options:
+        unit_widget.addItem(option.label, option.key)
+    _set_unit_widget(field, unit_widget, raw_values)
+    unit_widget.currentIndexChanged.connect(on_changed)
+    layout.addWidget(unit_widget)
+    return value_widget, container, unit_widget
+
+
+def _read_field_widget(field: BuilderFieldSpec, widget: FieldValueWidget) -> Any:
+    if field.widget_kind == "bool":
+        return widget.currentData()
+    return widget.text().strip()
+
+
+def _set_field_widget(field: BuilderFieldSpec, widget: FieldValueWidget, raw_value: Any) -> None:
+    if field.widget_kind == "bool":
+        widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
+    else:
+        widget.setText(_as_text(raw_value))
+
+
+TIME_UNITS = (
+    BuilderUnitOption("s", "s"),
+    BuilderUnitOption("ms", "ms", 1e-3),
+    BuilderUnitOption("min", "min", 60.0),
+    BuilderUnitOption("h", "h", 3600.0),
+    BuilderUnitOption("d", "d", 86400.0),
+)
+VOLTAGE_UNITS = (
+    BuilderUnitOption("V", "V"),
+    BuilderUnitOption("mV", "mV", 1e-3),
+    BuilderUnitOption("uV", "µV", 1e-6),
+)
+CURRENT_UNITS = (
+    BuilderUnitOption("mA", "mA"),
+    BuilderUnitOption("uA", "µA", 1e-3),
+    BuilderUnitOption("A", "A", 1e3),
+)
+CAPACITY_UNITS = (
+    BuilderUnitOption("mAh", "mAh"),
+    BuilderUnitOption("uAh", "µAh", 1e-3),
+    BuilderUnitOption("Ah", "Ah", 1e3),
+)
+TEMPERATURE_UNITS = (
+    BuilderUnitOption("degC", "°C"),
+    BuilderUnitOption("degF", "°F", 5.0 / 9.0, -32.0 * 5.0 / 9.0),
+    BuilderUnitOption("K", "K", 1.0, -273.15),
+)
+TEMPERATURE_RATE_UNITS = (
+    BuilderUnitOption("degC/min", "°C/min"),
+    BuilderUnitOption("degC/s", "°C/s", 60.0),
+    BuilderUnitOption("degC/h", "°C/h", 1.0 / 60.0),
+)
+FREQUENCY_UNITS = (
+    BuilderUnitOption("Hz", "Hz"),
+    BuilderUnitOption("mHz", "mHz", 1e-3),
+    BuilderUnitOption("kHz", "kHz", 1e3),
+    BuilderUnitOption("MHz", "MHz", 1e6),
+)
+SCAN_RATE_UNITS = (
+    BuilderUnitOption("mV/s", "mV/s"),
+    BuilderUnitOption("uV/s", "µV/s", 1e-3),
+    BuilderUnitOption("V/s", "V/s", 1e3),
+    BuilderUnitOption("V/min", "V/min", 1e3 / 60.0),
+)
+
+
 RECORD_FIELDS: tuple[BuilderFieldSpec, ...] = (
-    BuilderFieldSpec("time_s", "Record interval time (s)", "10", parse_required_float),
-    BuilderFieldSpec("voltage_V", "Record voltage delta (V)", "0.01", parse_optional_float),
-    BuilderFieldSpec("current_mA", "Record current delta (mA)", "", parse_optional_float),
+    _unit_field("time_s", "Record interval time", "10", parse_required_float, TIME_UNITS),
+    _unit_field("voltage_V", "Record voltage delta", "0.01", parse_optional_float, VOLTAGE_UNITS),
+    _unit_field("current_mA", "Record current delta", "", parse_optional_float, CURRENT_UNITS),
 )
 
 SAFETY_FIELDS: tuple[BuilderFieldSpec, ...] = (
-    BuilderFieldSpec("max_voltage_V", "Max voltage (V)", "4.3", parse_optional_float),
-    BuilderFieldSpec("min_voltage_V", "Min voltage (V)", "2.5", parse_optional_float),
-    BuilderFieldSpec("max_current_mA", "Max current (mA)", "", parse_optional_float),
-    BuilderFieldSpec("min_current_mA", "Min current (mA)", "", parse_optional_float),
-    BuilderFieldSpec("max_capacity_mAh", "Max capacity (mAh)", "", parse_optional_float),
-    BuilderFieldSpec("delay_s", "Safety delay (s)", "", parse_optional_float),
+    _unit_field("max_voltage_V", "Max voltage", "4.3", parse_optional_float, VOLTAGE_UNITS),
+    _unit_field("min_voltage_V", "Min voltage", "2.5", parse_optional_float, VOLTAGE_UNITS),
+    _unit_field("max_current_mA", "Max current", "", parse_optional_float, CURRENT_UNITS),
+    _unit_field("min_current_mA", "Min current", "", parse_optional_float, CURRENT_UNITS),
+    _unit_field("max_capacity_mAh", "Max capacity", "", parse_optional_float, CAPACITY_UNITS),
+    _unit_field("delay_s", "Safety delay", "", parse_optional_float, TIME_UNITS),
 )
 
 
@@ -126,51 +269,68 @@ def _current_step_target_summary(params: dict[str, Any]) -> str:
     if params.get("rate_C"):
         return f"{params['rate_C']} C"
     if params.get("current_mA"):
-        return f"{params['current_mA']} mA"
+        return _display_value(params, "current_mA", "mA")
     return ""
+
+
+def _display_value(params: dict[str, Any], key: str, default_unit: str) -> str:
+    value = params.get(key, "")
+    if value in {None, ""}:
+        return ""
+    return f"{value} {params.get(f'{key}_unit') or default_unit}"
 
 
 STEP_SPECS: dict[str, BuilderStepSpec] = {
     "tag": BuilderStepSpec(
         key="tag",
         label="Tag",
-        fields=(
-            BuilderFieldSpec("tag", "Tag name", "cycle", parse_required_text),
-        ),
+        fields=(BuilderFieldSpec("tag", "Tag name", "cycle", parse_required_text),),
         builder=lambda params: aurora_unicycler.Tag(tag=params["tag"]),
         summary_builder=lambda params: _summary_from_parts(params.get("tag", "")),
     ),
     "open_circuit_voltage": BuilderStepSpec(
         key="open_circuit_voltage",
         label="Open Circuit Voltage",
-        fields=(
-            BuilderFieldSpec("until_time_s", "Duration (s)", "600", parse_required_float),
-        ),
+        fields=(_unit_field("until_time_s", "Duration", "600", parse_required_float, TIME_UNITS),),
         builder=lambda params: aurora_unicycler.OpenCircuitVoltage(**params),
-        summary_builder=lambda params: _summary_from_parts(f"{params.get('until_time_s', '')} s"),
+        summary_builder=lambda params: _summary_from_parts(
+            _display_value(params, "until_time_s", "s")
+        ),
     ),
     "wait": BuilderStepSpec(
         key="wait",
         label="Wait",
-        fields=(
-            BuilderFieldSpec("until_time_s", "Duration (s)", "60", parse_required_float),
-        ),
+        fields=(_unit_field("until_time_s", "Duration", "60", parse_required_float, TIME_UNITS),),
         builder=lambda params: aurora_unicycler.Wait(**params),
-        summary_builder=lambda params: _summary_from_parts(f"{params.get('until_time_s', '')} s"),
+        summary_builder=lambda params: _summary_from_parts(
+            _display_value(params, "until_time_s", "s")
+        ),
     ),
     "temperature": BuilderStepSpec(
         key="temperature",
         label="Temperature",
         fields=(
-            BuilderFieldSpec("until_temp_c", "Target temperature (degC)", "25", parse_required_float),
-            BuilderFieldSpec("wait_after_s", "Wait after target (s)", "60", parse_required_float),
-            BuilderFieldSpec("ramp_rate", "Ramp rate (degC/min)", "0.35", parse_required_float),
+            _unit_field(
+                "until_temp_c",
+                "Target temperature",
+                "25",
+                parse_required_float,
+                TEMPERATURE_UNITS,
+            ),
+            _unit_field(
+                "wait_after_s", "Wait after target", "60", parse_required_float, TIME_UNITS
+            ),
+            _unit_field(
+                "ramp_rate", "Ramp rate", "0.35", parse_required_float, TEMPERATURE_RATE_UNITS
+            ),
         ),
         builder=lambda params: Temperature(**params),
         summary_builder=lambda params: _summary_from_parts(
-            f"{params.get('until_temp_c', '')} degC",
-            f"{params.get('ramp_rate', '')} degC/min" if params.get("ramp_rate") else "",
-            f"wait {params.get('wait_after_s', '')} s" if params.get("wait_after_s") else "",
+            _display_value(params, "until_temp_c", "degC"),
+            _display_value(params, "ramp_rate", "degC/min"),
+            f"wait {_display_value(params, 'wait_after_s', 's')}"
+            if params.get("wait_after_s")
+            else "",
             "INTE IMPLEMENTERAD",
         ),
     ),
@@ -179,56 +339,101 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         label="Constant Current",
         fields=(
             BuilderFieldSpec("rate_C", "Rate (C)", "0.5", parse_optional_c_rate),
-            BuilderFieldSpec("current_mA", "Current (mA)", "", parse_optional_float),
-            BuilderFieldSpec("until_time_s", "Max time (s)", "10800", parse_optional_float),
-            BuilderFieldSpec("until_voltage_V", "Stop at voltage (V)", "4.2", parse_optional_float),
+            _unit_field("current_mA", "Current", "", parse_optional_float, CURRENT_UNITS),
+            _unit_field("until_time_s", "Max time", "10800", parse_optional_float, TIME_UNITS),
+            _unit_field(
+                "until_voltage_V",
+                "Stop at voltage",
+                "4.2",
+                parse_optional_float,
+                VOLTAGE_UNITS,
+            ),
         ),
         builder=lambda params: aurora_unicycler.ConstantCurrent(**params),
         summary_builder=lambda params: _summary_from_parts(
             _current_step_target_summary(params),
-            f"until {params.get('until_voltage_V', '')} V" if params.get("until_voltage_V") else "",
-            f"max {params.get('until_time_s', '')} s" if params.get("until_time_s") else "",
+            f"until {_display_value(params, 'until_voltage_V', 'V')}"
+            if params.get("until_voltage_V")
+            else "",
+            f"max {_display_value(params, 'until_time_s', 's')}"
+            if params.get("until_time_s")
+            else "",
         ),
     ),
     "constant_voltage": BuilderStepSpec(
         key="constant_voltage",
         label="Constant Voltage",
         fields=(
-            BuilderFieldSpec("voltage_V", "Voltage (V)", "4.2", parse_required_float),
-            BuilderFieldSpec("until_time_s", "Max time (s)", "3600", parse_optional_float),
+            _unit_field("voltage_V", "Voltage", "4.2", parse_required_float, VOLTAGE_UNITS),
+            _unit_field("until_time_s", "Max time", "3600", parse_optional_float, TIME_UNITS),
             BuilderFieldSpec("until_rate_C", "Stop at rate (C)", "0.05", parse_optional_c_rate),
-            BuilderFieldSpec("until_current_mA", "Stop at current (mA)", "", parse_optional_float),
+            _unit_field(
+                "until_current_mA",
+                "Stop at current",
+                "",
+                parse_optional_float,
+                CURRENT_UNITS,
+            ),
         ),
         builder=lambda params: aurora_unicycler.ConstantVoltage(**params),
         summary_builder=lambda params: _summary_from_parts(
-            f"{params.get('voltage_V', '')} V",
+            _display_value(params, "voltage_V", "V"),
             f"until {params.get('until_rate_C', '')} C" if params.get("until_rate_C") else "",
-            f"until {params.get('until_current_mA', '')} mA" if params.get("until_current_mA") else "",
-            f"max {params.get('until_time_s', '')} s" if params.get("until_time_s") else "",
+            f"until {_display_value(params, 'until_current_mA', 'mA')}"
+            if params.get("until_current_mA")
+            else "",
+            f"max {_display_value(params, 'until_time_s', 's')}"
+            if params.get("until_time_s")
+            else "",
         ),
     ),
     "voltage_scan": BuilderStepSpec(
         key="voltage_scan",
         label="Voltage Scan",
         fields=(
-            BuilderFieldSpec("start_voltage_V", "Start voltage (V)", "3.0", parse_required_float),
-            BuilderFieldSpec("end_voltage_V", "End voltage (V)", "4.2", parse_required_float),
-            BuilderFieldSpec("scan_rate_mV_per_s", "Scan rate (mV/s)", "10", parse_required_float),
+            _unit_field(
+                "start_voltage_V",
+                "Start voltage",
+                "3.0",
+                parse_required_float,
+                VOLTAGE_UNITS,
+            ),
+            _unit_field("end_voltage_V", "End voltage", "4.2", parse_required_float, VOLTAGE_UNITS),
+            _unit_field(
+                "scan_rate_mV_per_s",
+                "Scan rate",
+                "10",
+                parse_required_float,
+                SCAN_RATE_UNITS,
+            ),
         ),
         builder=lambda params: aurora_unicycler.VoltageScan(**params),
         summary_builder=lambda params: _summary_from_parts(
-            f"{params.get('start_voltage_V', '')} -> {params.get('end_voltage_V', '')} V",
-            f"{params.get('scan_rate_mV_per_s', '')} mV/s",
+            f"{_display_value(params, 'start_voltage_V', 'V')} -> "
+            f"{_display_value(params, 'end_voltage_V', 'V')}",
+            _display_value(params, "scan_rate_mV_per_s", "mV/s"),
         ),
     ),
     "impedance_spectroscopy": BuilderStepSpec(
         key="impedance_spectroscopy",
         label="Impedance Spectroscopy",
         fields=(
-            BuilderFieldSpec("amplitude_V", "Amplitude (V)", "0.01", parse_optional_float),
-            BuilderFieldSpec("amplitude_mA", "Amplitude (mA)", "", parse_optional_float),
-            BuilderFieldSpec("start_frequency_Hz", "Start frequency (Hz)", "10000", parse_required_float),
-            BuilderFieldSpec("end_frequency_Hz", "End frequency (Hz)", "0.1", parse_required_float),
+            _unit_field("amplitude_V", "Amplitude", "0.01", parse_optional_float, VOLTAGE_UNITS),
+            _unit_field("amplitude_mA", "Amplitude", "", parse_optional_float, CURRENT_UNITS),
+            _unit_field(
+                "start_frequency_Hz",
+                "Start frequency",
+                "10000",
+                parse_required_float,
+                FREQUENCY_UNITS,
+            ),
+            _unit_field(
+                "end_frequency_Hz",
+                "End frequency",
+                "0.1",
+                parse_required_float,
+                FREQUENCY_UNITS,
+            ),
             BuilderFieldSpec("points_per_decade", "Points per decade", "10", parse_required_int),
             BuilderFieldSpec("measures_per_point", "Measures per point", "1", parse_required_int),
             BuilderFieldSpec(
@@ -241,9 +446,10 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         ),
         builder=lambda params: aurora_unicycler.ImpedanceSpectroscopy(**params),
         summary_builder=lambda params: _summary_from_parts(
-            f"{params.get('start_frequency_Hz', '')} -> {params.get('end_frequency_Hz', '')} Hz",
-            f"{params.get('amplitude_V', '')} V" if params.get("amplitude_V") else "",
-            f"{params.get('amplitude_mA', '')} mA" if params.get("amplitude_mA") else "",
+            f"{_display_value(params, 'start_frequency_Hz', 'Hz')} -> "
+            f"{_display_value(params, 'end_frequency_Hz', 'Hz')}",
+            _display_value(params, "amplitude_V", "V"),
+            _display_value(params, "amplitude_mA", "mA"),
         ),
     ),
 }
@@ -313,10 +519,15 @@ def default_protocol_data() -> dict[str, Any]:
     }
 
 
-def _parse_fields(field_specs: tuple[BuilderFieldSpec, ...], raw_values: dict[str, Any]) -> dict[str, Any]:
+def _parse_fields(
+    field_specs: tuple[BuilderFieldSpec, ...], raw_values: dict[str, Any]
+) -> dict[str, Any]:
     parsed: dict[str, Any] = {}
     for field in field_specs:
-        parsed[field.key] = field.parse(raw_values.get(field.key, field.default))
+        parsed[field.key] = field.parse(
+            raw_values.get(field.key, field.default),
+            raw_values.get(field.unit_key, field.default_unit),
+        )
     return parsed
 
 
@@ -324,7 +535,9 @@ def _clean_none_values(values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
-def build_protocol_from_visual_data(protocol_data: dict[str, Any]) -> aurora_unicycler.CyclingProtocol:
+def build_protocol_from_visual_data(
+    protocol_data: dict[str, Any],
+) -> aurora_unicycler.CyclingProtocol:
     record = aurora_unicycler.RecordParams(
         **_clean_none_values(_parse_fields(RECORD_FIELDS, protocol_data.get("record", {})))
     )
@@ -354,9 +567,7 @@ def build_protocol_from_visual_data(protocol_data: dict[str, Any]) -> aurora_uni
                 loop_to = _as_text(raw_step.get("loop_to_tag", ""))
                 if not loop_to:
                     raise ValueError(f"Loop target tag is required for step {index}.")
-            method_steps.append(
-                aurora_unicycler.Loop(loop_to=loop_to, cycle_count=cycle_count)
-            )
+            method_steps.append(aurora_unicycler.Loop(loop_to=loop_to, cycle_count=cycle_count))
             continue
 
         spec = STEP_SPECS.get(step_type)
@@ -385,7 +596,8 @@ class AuroraStepCard(QFrame):
     def __init__(self, step_type: str, raw_values: dict[str, Any] | None = None, parent=None):
         super().__init__(parent)
         self.step_type = step_type
-        self.field_widgets: dict[str, QWidget] = {}
+        self.field_widgets: dict[str, FieldValueWidget] = {}
+        self.unit_widgets: dict[str, QComboBox] = {}
         self.field_labels: dict[QWidget, QLabel] = {}
         self.field_position = 0
         self._expanded = True
@@ -464,18 +676,13 @@ class AuroraStepCard(QFrame):
     def _build_generic_fields(self, raw_values: dict[str, Any]):
         spec = STEP_SPECS[self.step_type]
         for field in spec.fields:
-            if field.widget_kind == "bool":
-                widget = QComboBox(self)
-                widget.addItem("No", False)
-                widget.addItem("Yes", True)
-                raw_value = raw_values.get(field.key, field.default)
-                widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
-                widget.currentIndexChanged.connect(self._on_field_changed)
-            else:
-                widget = QLineEdit(_as_text(raw_values.get(field.key, field.default)), self)
-                widget.textChanged.connect(self._on_field_changed)
-            self.field_widgets[field.key] = widget
-            self._add_compact_field(field.label, widget)
+            value_widget, display_widget, unit_widget = _create_field_editor(
+                field, raw_values, self, self._on_field_changed
+            )
+            self.field_widgets[field.key] = value_widget
+            if unit_widget is not None:
+                self.unit_widgets[field.key] = unit_widget
+            self._add_compact_field(field.label, display_widget)
 
     def _build_loop_fields(self, raw_values: dict[str, Any]):
         self.loop_target_mode = QComboBox(self)
@@ -565,10 +772,9 @@ class AuroraStepCard(QFrame):
         values = {"step": self.step_type}
         for field in STEP_SPECS[self.step_type].fields:
             widget = self.field_widgets[field.key]
-            if field.widget_kind == "bool":
-                values[field.key] = widget.currentData()
-            else:
-                values[field.key] = widget.text().strip()
+            values[field.key] = _read_field_widget(field, widget)
+            if field.unit_options:
+                values[field.unit_key] = self.unit_widgets[field.key].currentData()
         return values
 
     def update_header(self, index: int):
@@ -733,17 +939,16 @@ class AuroraVisualBuilder(QWidget):
         layout.addLayout(form)
 
         for field in field_specs:
-            if field.widget_kind == "bool":
-                widget = QComboBox(frame)
-                widget.addItem("No", False)
-                widget.addItem("Yes", True)
-                widget.setCurrentIndex(1 if parse_bool(field.default) else 0)
-                widget.currentIndexChanged.connect(self.changed.emit)
-            else:
-                widget = QLineEdit(_as_text(field.default), frame)
-                widget.textChanged.connect(self.changed.emit)
-            form.addRow(field.label, widget)
-            setattr(self, f"{field.key}_widget", widget)
+            value_widget, display_widget, unit_widget = _create_field_editor(
+                field,
+                {},
+                frame,
+                lambda *_args: self.changed.emit(),
+            )
+            if unit_widget is not None:
+                setattr(self, f"{field.unit_key}_widget", unit_widget)
+            form.addRow(field.label, display_widget)
+            setattr(self, f"{field.key}_widget", value_widget)
 
         return frame
 
@@ -759,7 +964,9 @@ class AuroraVisualBuilder(QWidget):
     def add_selected_step(self):
         self.add_step(self.step_type_combo.currentData())
 
-    def add_step(self, step_type: str, raw_values: dict[str, Any] | None = None, index: int | None = None):
+    def add_step(
+        self, step_type: str, raw_values: dict[str, Any] | None = None, index: int | None = None
+    ):
         card = AuroraStepCard(step_type, raw_values=raw_values, parent=self.steps_container)
         card.changed.connect(self._refresh_cards)
         card.move_up_requested.connect(lambda current: self.move_step(current, -1))
@@ -767,7 +974,9 @@ class AuroraVisualBuilder(QWidget):
         card.remove_requested.connect(self.remove_step)
         card.expanded_requested.connect(self.toggle_card_expanded)
 
-        insert_index = len(self.step_cards) if index is None else max(0, min(index, len(self.step_cards)))
+        insert_index = (
+            len(self.step_cards) if index is None else max(0, min(index, len(self.step_cards)))
+        )
         self.step_cards.insert(insert_index, card)
         self.steps_layout.insertWidget(insert_index, card)
         self.set_expanded_card(card)
@@ -853,17 +1062,17 @@ class AuroraVisualBuilder(QWidget):
         values: dict[str, Any] = {}
         for field in field_specs:
             widget = getattr(self, f"{field.key}_widget")
-            if field.widget_kind == "bool":
-                values[field.key] = widget.currentData()
-            else:
-                values[field.key] = widget.text().strip()
+            values[field.key] = _read_field_widget(field, widget)
+            if field.unit_options:
+                unit_widget = getattr(self, f"{field.unit_key}_widget")
+                values[field.unit_key] = unit_widget.currentData()
         return values
 
     def _set_section(self, field_specs: tuple[BuilderFieldSpec, ...], raw_values: dict[str, Any]):
         for field in field_specs:
             widget = getattr(self, f"{field.key}_widget")
             raw_value = raw_values.get(field.key, field.default)
-            if field.widget_kind == "bool":
-                widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
-            else:
-                widget.setText(_as_text(raw_value))
+            _set_field_widget(field, widget, raw_value)
+            if field.unit_options:
+                unit_widget = getattr(self, f"{field.unit_key}_widget")
+                _set_unit_widget(field, unit_widget, raw_values)
