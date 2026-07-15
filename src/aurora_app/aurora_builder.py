@@ -85,6 +85,7 @@ class BuilderUnitOption:
     label: str
     scale_to_aurora: float = 1.0
     offset_to_aurora: float = 0.0
+    aurora_field: str | None = None
 
     def to_aurora(self, value: float) -> float:
         return value * self.scale_to_aurora + self.offset_to_aurora
@@ -107,20 +108,58 @@ class BuilderFieldSpec:
     def default_unit(self) -> str:
         return self.unit_options[0].key if self.unit_options else ""
 
-    def parse(self, raw_value: Any, raw_unit: Any = None) -> Any:
+    def parse_for_aurora(self, raw_value: Any, raw_unit: Any = None) -> tuple[str, Any]:
         try:
             value = self.parser(raw_value)
         except ValueError as exc:
             raise ValueError(f"Invalid value for {self.label}: {raw_value}") from exc
 
         if value is None or not self.unit_options:
-            return value
+            return self.key, value
 
         unit_key = _as_text(raw_unit) or self.default_unit
         unit = next((option for option in self.unit_options if option.key == unit_key), None)
         if unit is None:
             raise ValueError(f"Unsupported unit for {self.label}: {unit_key}")
-        return unit.to_aurora(value)
+        return unit.aurora_field or self.key, unit.to_aurora(value)
+
+
+@dataclass(frozen=True)
+class BuilderFieldChoiceOption:
+    key: str
+    label: str
+    field_key: str
+
+
+@dataclass(frozen=True)
+class BuilderFieldChoice:
+    key: str
+    label: str
+    options: tuple[BuilderFieldChoiceOption, ...]
+
+    def selected_key(self, raw_values: dict[str, Any]) -> str:
+        selected = _as_text(raw_values.get(self.key))
+        if any(option.key == selected for option in self.options):
+            return selected
+        for option in self.options:
+            if _as_text(raw_values.get(option.field_key)):
+                return option.key
+        return self.options[0].key
+
+    def active_field_key(self, selected: str) -> str:
+        return next(option.field_key for option in self.options if option.key == selected)
+
+    def selected_values(
+        self, raw_values: dict[str, Any], selected: str | None = None
+    ) -> dict[str, Any]:
+        values = dict(raw_values)
+        selected = selected or self.selected_key(values)
+        values[self.key] = selected
+        active_field = self.active_field_key(selected)
+        for option in self.options:
+            if option.field_key != active_field:
+                values[option.field_key] = ""
+        return values
 
 
 @dataclass(frozen=True)
@@ -130,6 +169,7 @@ class BuilderStepSpec:
     fields: tuple[BuilderFieldSpec, ...]
     builder: Callable[[dict[str, Any]], object]
     summary_builder: SummaryBuilder
+    field_choice: BuilderFieldChoice | None = None
 
 
 def _unit_field(
@@ -215,6 +255,14 @@ CURRENT_UNITS = (
     BuilderUnitOption("mA", "mA"),
     BuilderUnitOption("uA", "µA", 1e-3),
     BuilderUnitOption("A", "A", 1e3),
+)
+EIS_AMPLITUDE_UNITS = (
+    BuilderUnitOption("V", "V", aurora_field="amplitude_V"),
+    BuilderUnitOption("mV", "mV", 1e-3, aurora_field="amplitude_V"),
+    BuilderUnitOption("uV", "µV", 1e-6, aurora_field="amplitude_V"),
+    BuilderUnitOption("mA", "mA", aurora_field="amplitude_mA"),
+    BuilderUnitOption("uA", "µA", 1e-3, aurora_field="amplitude_mA"),
+    BuilderUnitOption("A", "A", 1e3, aurora_field="amplitude_mA"),
 )
 CAPACITY_UNITS = (
     BuilderUnitOption("mAh", "mAh"),
@@ -338,7 +386,7 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         key="constant_current",
         label="Constant Current",
         fields=(
-            BuilderFieldSpec("rate_C", "Rate (C)", "0.5", parse_optional_c_rate),
+            BuilderFieldSpec("rate_C", "C-rate", "0.5", parse_optional_c_rate),
             _unit_field("current_mA", "Current", "", parse_optional_float, CURRENT_UNITS),
             _unit_field("until_time_s", "Max time", "10800", parse_optional_float, TIME_UNITS),
             _unit_field(
@@ -358,6 +406,14 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
             f"max {_display_value(params, 'until_time_s', 's')}"
             if params.get("until_time_s")
             else "",
+        ),
+        field_choice=BuilderFieldChoice(
+            key="current_mode",
+            label="Current input",
+            options=(
+                BuilderFieldChoiceOption("rate", "C-rate", "rate_C"),
+                BuilderFieldChoiceOption("current", "Current", "current_mA"),
+            ),
         ),
     ),
     "constant_voltage": BuilderStepSpec(
@@ -418,8 +474,9 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         key="impedance_spectroscopy",
         label="Impedance Spectroscopy",
         fields=(
-            _unit_field("amplitude_V", "Amplitude", "0.01", parse_optional_float, VOLTAGE_UNITS),
-            _unit_field("amplitude_mA", "Amplitude", "", parse_optional_float, CURRENT_UNITS),
+            _unit_field(
+                "amplitude", "Amplitude", "0.01", parse_optional_float, EIS_AMPLITUDE_UNITS
+            ),
             _unit_field(
                 "start_frequency_Hz",
                 "Start frequency",
@@ -448,8 +505,7 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         summary_builder=lambda params: _summary_from_parts(
             f"{_display_value(params, 'start_frequency_Hz', 'Hz')} -> "
             f"{_display_value(params, 'end_frequency_Hz', 'Hz')}",
-            _display_value(params, "amplitude_V", "V"),
-            _display_value(params, "amplitude_mA", "mA"),
+            _display_value(params, "amplitude", "V"),
         ),
     ),
 }
@@ -465,6 +521,35 @@ STEP_ORDER = (
     "impedance_spectroscopy",
     "loop",
 )
+
+
+def _migrate_legacy_eis_amplitude(step_type: str, raw_values: dict[str, Any]) -> dict[str, Any]:
+    if step_type != "impedance_spectroscopy" or "amplitude" in raw_values:
+        return raw_values
+    if "amplitude_V" not in raw_values and "amplitude_mA" not in raw_values:
+        return raw_values
+
+    values = dict(raw_values)
+    mode = _as_text(values.get("eis_mode"))
+    use_current = mode == "current" or (
+        mode != "voltage"
+        and bool(_as_text(values.get("amplitude_mA")))
+        and not _as_text(values.get("amplitude_V"))
+    )
+    legacy_key = "amplitude_mA" if use_current else "amplitude_V"
+    default_unit = "mA" if use_current else "V"
+    values["amplitude"] = values.get(legacy_key, "")
+    values["amplitude_unit"] = values.get(f"{legacy_key}_unit", default_unit)
+    legacy_keys = (
+        "eis_mode",
+        "amplitude_V",
+        "amplitude_V_unit",
+        "amplitude_mA",
+        "amplitude_mA_unit",
+    )
+    for key in legacy_keys:
+        values.pop(key, None)
+    return values
 
 
 def default_visual_builder_data() -> dict[str, Any]:
@@ -524,10 +609,11 @@ def _parse_fields(
 ) -> dict[str, Any]:
     parsed: dict[str, Any] = {}
     for field in field_specs:
-        parsed[field.key] = field.parse(
+        parsed_key, parsed_value = field.parse_for_aurora(
             raw_values.get(field.key, field.default),
             raw_values.get(field.unit_key, field.default_unit),
         )
+        parsed[parsed_key] = parsed_value
     return parsed
 
 
@@ -573,6 +659,9 @@ def build_protocol_from_visual_data(
         spec = STEP_SPECS.get(step_type)
         if spec is None:
             raise ValueError(f"Unsupported Aurora step type: {step_type}")
+        raw_step = _migrate_legacy_eis_amplitude(step_type, raw_step)
+        if spec.field_choice is not None:
+            raw_step = spec.field_choice.selected_values(raw_step)
         params = _clean_none_values(_parse_fields(spec.fields, raw_step))
         method_steps.append(spec.builder(params))
 
@@ -598,7 +687,9 @@ class AuroraStepCard(QFrame):
         self.step_type = step_type
         self.field_widgets: dict[str, FieldValueWidget] = {}
         self.unit_widgets: dict[str, QComboBox] = {}
+        self.field_display_widgets: dict[str, QWidget] = {}
         self.field_labels: dict[QWidget, QLabel] = {}
+        self.field_choice_widget: QComboBox | None = None
         self.field_position = 0
         self._expanded = True
         self.setObjectName("auroraStepCard")
@@ -675,14 +766,28 @@ class AuroraStepCard(QFrame):
 
     def _build_generic_fields(self, raw_values: dict[str, Any]):
         spec = STEP_SPECS[self.step_type]
+        raw_values = _migrate_legacy_eis_amplitude(self.step_type, raw_values)
+        if spec.field_choice is not None:
+            self.field_choice_widget = QComboBox(self)
+            for option in spec.field_choice.options:
+                self.field_choice_widget.addItem(option.label, option.key)
+            selected = spec.field_choice.selected_key(raw_values)
+            self.field_choice_widget.setCurrentIndex(self.field_choice_widget.findData(selected))
+            self._add_compact_field(spec.field_choice.label, self.field_choice_widget)
+
         for field in spec.fields:
             value_widget, display_widget, unit_widget = _create_field_editor(
                 field, raw_values, self, self._on_field_changed
             )
             self.field_widgets[field.key] = value_widget
+            self.field_display_widgets[field.key] = display_widget
             if unit_widget is not None:
                 self.unit_widgets[field.key] = unit_widget
             self._add_compact_field(field.label, display_widget)
+
+        if self.field_choice_widget is not None:
+            self.field_choice_widget.currentIndexChanged.connect(self._on_field_choice_changed)
+            self._update_field_choice_visibility()
 
     def _build_loop_fields(self, raw_values: dict[str, Any]):
         self.loop_target_mode = QComboBox(self)
@@ -742,6 +847,22 @@ class AuroraStepCard(QFrame):
     def _on_field_changed(self, *_args):
         self.changed.emit()
 
+    def _on_field_choice_changed(self, *_args):
+        self._update_field_choice_visibility()
+        self.changed.emit()
+
+    def _update_field_choice_visibility(self):
+        spec = STEP_SPECS[self.step_type]
+        if spec.field_choice is None or self.field_choice_widget is None:
+            return
+
+        active_field = spec.field_choice.active_field_key(self.field_choice_widget.currentData())
+        for option in spec.field_choice.options:
+            display_widget = self.field_display_widgets[option.field_key]
+            visible = option.field_key == active_field
+            display_widget.setVisible(visible)
+            self.field_labels[display_widget].setVisible(visible)
+
     def set_tag_options(self, tags: list[str]):
         if self.step_type != "loop":
             return
@@ -770,11 +891,16 @@ class AuroraStepCard(QFrame):
             }
 
         values = {"step": self.step_type}
-        for field in STEP_SPECS[self.step_type].fields:
+        spec = STEP_SPECS[self.step_type]
+        for field in spec.fields:
             widget = self.field_widgets[field.key]
             values[field.key] = _read_field_widget(field, widget)
             if field.unit_options:
                 values[field.unit_key] = self.unit_widgets[field.key].currentData()
+        if spec.field_choice is not None and self.field_choice_widget is not None:
+            values = spec.field_choice.selected_values(
+                values, self.field_choice_widget.currentData()
+            )
         return values
 
     def update_header(self, index: int):
