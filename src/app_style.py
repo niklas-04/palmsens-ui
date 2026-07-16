@@ -67,6 +67,12 @@ QFrame#auroraStepCard {
     border-radius: 6px;
 }
 
+QFrame#auroraStepPalette {
+    background: #f8fafc;
+    border: 1px solid #d8dee6;
+    border-radius: 8px;
+}
+
 QFrame#auroraStepCard[stepType="tag"] {
     border-left: 5px solid #64748b;
 }
@@ -181,6 +187,24 @@ QLabel#auroraCompactFieldLabel {
 QPushButton#auroraStepAction,
 QPushButton#auroraAddStepButton {
     padding: 3px 8px;
+}
+
+QPushButton#auroraStepTypeButton {
+    background: transparent;
+    border-color: transparent;
+    border-radius: 5px;
+    padding: 5px 8px;
+    text-align: left;
+}
+
+QPushButton#auroraStepTypeButton:hover {
+    background: #ffffff;
+    border-color: #b8c5d1;
+}
+
+QPushButton#auroraStepTypeButton:pressed {
+    background: #e5eef7;
+    border-color: #8ca3ba;
 }
 
 QScrollArea#auroraStepsScroll {

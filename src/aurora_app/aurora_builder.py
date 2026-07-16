@@ -754,9 +754,14 @@ class AuroraStepCard(QFrame):
         button_layout.setSpacing(4)
         header_layout.addLayout(button_layout)
 
-        self.remove_button = QPushButton("Remove", self)
+        self.remove_button = QPushButton(self)
         self.remove_button.setObjectName("auroraStepAction")
-        self.remove_button.setFixedWidth(72)
+        self.remove_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self.remove_button.setToolTip("Remove this step")
+        self.remove_button.setAccessibleName("Remove this step")
+        self.remove_button.setFixedSize(32, 28)
         self.remove_button.clicked.connect(lambda: self.remove_requested.emit(self))
         button_layout.addWidget(self.remove_button)
 
@@ -1117,23 +1122,12 @@ class AuroraVisualBuilder(QWidget):
         self.sequence_meta_label.setObjectName("auroraSequenceMeta")
         sequence_header.addWidget(self.sequence_meta_label)
 
-        self.step_type_combo = QComboBox(self.sequence_frame)
-        for step_key in STEP_ORDER:
-            label = "Loop" if step_key == "loop" else STEP_SPECS[step_key].label
-            self.step_type_combo.addItem(label, step_key)
-        sequence_header.addWidget(self.step_type_combo)
-
         self.import_package_button = QPushButton("Import Package", self.sequence_frame)
         self.import_package_button.setObjectName("auroraAddStepButton")
         self.import_package_button.clicked.connect(
             lambda: self.import_package_requested.emit()
         )
         sequence_header.addWidget(self.import_package_button)
-
-        self.add_step_button = QPushButton("Add Step", self.sequence_frame)
-        self.add_step_button.setObjectName("auroraAddStepButton")
-        self.add_step_button.clicked.connect(self.add_selected_step)
-        sequence_header.addWidget(self.add_step_button)
 
         self.focus_sequence_button = QPushButton("Focus", self.sequence_frame)
         self.focus_sequence_button.setObjectName("auroraAddStepButton")
@@ -1145,7 +1139,19 @@ class AuroraVisualBuilder(QWidget):
         self.steps_scroll.setObjectName("auroraStepsScroll")
         self.steps_scroll.setWidgetResizable(True)
         self.steps_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        sequence_layout.addWidget(self.steps_scroll, 1)
+
+        sequence_body = QHBoxLayout()
+        sequence_body.setContentsMargins(0, 0, 0, 0)
+        sequence_body.setSpacing(12)
+        sequence_layout.addLayout(sequence_body, 1)
+
+        self.step_palette = self._build_step_palette()
+        sequence_body.addWidget(
+            self.step_palette,
+            0,
+            Qt.AlignmentFlag.AlignTop,
+        )
+        sequence_body.addWidget(self.steps_scroll, 1)
 
         self.steps_container = AuroraStepsContainer(self.steps_scroll)
         self.steps_container.drag_moved.connect(self._on_step_drag_moved)
@@ -1222,6 +1228,43 @@ class AuroraVisualBuilder(QWidget):
         else:
             self.splitter.setSizes([3, 2])
 
+    def _build_step_palette(self) -> QFrame:
+        frame = QFrame(self.sequence_frame)
+        frame.setObjectName("auroraStepPalette")
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setFixedWidth(190)
+        frame.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        title = QLabel("Available steps", frame)
+        title.setObjectName("auroraCardTitle")
+        layout.addWidget(title)
+
+        description = QLabel("Adds after the active step.", frame)
+        description.setObjectName("auroraCardDescription")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.step_type_buttons: dict[str, QPushButton] = {}
+        for step_type in STEP_ORDER:
+            label = "Loop" if step_type == "loop" else STEP_SPECS[step_type].label
+            button = QPushButton(label, frame)
+            button.setObjectName("auroraStepTypeButton")
+            button.setToolTip(f"Add {label}")
+            button.setAccessibleName(f"Add {label} step")
+            button.clicked.connect(
+                lambda _checked=False, current_type=step_type: self.add_step_after_active(
+                    current_type
+                )
+            )
+            layout.addWidget(button)
+            self.step_type_buttons[step_type] = button
+
+        return frame
+
     def _build_section(
         self,
         title: str,
@@ -1264,21 +1307,26 @@ class AuroraVisualBuilder(QWidget):
         frame.setObjectName("auroraSection")
         frame.setFrameShape(QFrame.Shape.StyledPanel)
 
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(8)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
 
-        title = QLabel("Reorder selected step", frame)
+        labels = QVBoxLayout()
+        labels.setContentsMargins(0, 0, 0, 0)
+        labels.setSpacing(3)
+        layout.addLayout(labels, 1)
+
+        title = QLabel("Reorder", frame)
         title.setObjectName("auroraSectionTitle")
-        layout.addWidget(title)
+        labels.addWidget(title)
 
         self.selected_step_label = QLabel("No step selected", frame)
         self.selected_step_label.setObjectName("auroraSectionDescription")
-        layout.addWidget(self.selected_step_label)
+        labels.addWidget(self.selected_step_label)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
-        buttons.setSpacing(8)
+        buttons.setSpacing(6)
         layout.addLayout(buttons)
 
         self.move_up_button = QPushButton(frame)
@@ -1288,6 +1336,7 @@ class AuroraVisualBuilder(QWidget):
         )
         self.move_up_button.setToolTip("Move selected step up")
         self.move_up_button.setAccessibleName("Move selected step up")
+        self.move_up_button.setFixedSize(36, 30)
         self.move_up_button.clicked.connect(lambda: self.move_selected_step(-1))
         buttons.addWidget(self.move_up_button)
 
@@ -1298,6 +1347,7 @@ class AuroraVisualBuilder(QWidget):
         )
         self.move_down_button.setToolTip("Move selected step down")
         self.move_down_button.setAccessibleName("Move selected step down")
+        self.move_down_button.setFixedSize(36, 30)
         self.move_down_button.clicked.connect(lambda: self.move_selected_step(1))
         buttons.addWidget(self.move_down_button)
 
@@ -1312,9 +1362,9 @@ class AuroraVisualBuilder(QWidget):
     def build_protocol(self) -> aurora_unicycler.CyclingProtocol:
         return build_protocol_from_visual_data(self.raw_data())
 
-    def add_selected_step(self):
+    def add_step_after_active(self, step_type: str):
         self.add_step(
-            self.step_type_combo.currentData(),
+            step_type,
             index=self._insertion_index_after_selected(),
         )
 
