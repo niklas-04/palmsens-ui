@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QToolBar,
     QVBoxLayout,
@@ -922,11 +923,6 @@ class main_window(QMainWindow):
         self.disconnect_action.triggered.connect(self.request_disconnect)
         toolbar.addAction(self.disconnect_action)
 
-        self.debug_device_action = QAction("Debug Device", self)
-        self.debug_device_action.setCheckable(True)
-        self.debug_device_action.setStatusTip("Use a mock 9-channel test device when scanning")
-        toolbar.addAction(self.debug_device_action)
-
         self.aurora_builder_action = QAction("Aurora Builder", self)
         self.aurora_builder_action.setStatusTip("Open the standalone Aurora method builder")
         self.aurora_builder_action.triggered.connect(self.open_aurora_builder)
@@ -951,6 +947,19 @@ class main_window(QMainWindow):
         self.export_bdf_action.setStatusTip("Export selected channel measurements as BDF files")
         self.export_bdf_action.triggered.connect(self.export_bdf)
         toolbar.addAction(self.export_bdf_action)
+
+        toolbar_spacer = QWidget(toolbar)
+        toolbar_spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        toolbar.addWidget(toolbar_spacer)
+
+        self.debug_device_checkbox = QCheckBox("Debug device", toolbar)
+        self.debug_device_checkbox.setToolTip(
+            "Use a mock 9-channel test device when scanning"
+        )
+        toolbar.addWidget(self.debug_device_checkbox)
 
         self.connection_indicator = connection_indicator()
         self.statusBar().addPermanentWidget(self.connection_indicator)
@@ -987,7 +996,7 @@ class main_window(QMainWindow):
             return
 
         try:
-            devices = pslib.find_devices(debug_mode=self.debug_device_action.isChecked())
+            devices = pslib.find_devices(debug_mode=self.debug_device_checkbox.isChecked())
         except Exception as exc:
             QMessageBox.critical(
                 self,
@@ -1014,6 +1023,19 @@ class main_window(QMainWindow):
                 "Measurement running",
                 "Stop the active measurement before disconnecting the device.",
             )
+            return
+
+        if not self.device_manager.is_connected:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Disconnect device?",
+            "Are you sure you want to disconnect the device?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
 
         self.device_manager.disconnect_device()

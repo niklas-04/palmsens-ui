@@ -6,8 +6,10 @@ from typing import Any
 
 import aurora_unicycler
 from aurora_unicycler._core import Temperature
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QMimeData, Qt, Signal
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
 Parser = Callable[[Any], Any]
 SummaryBuilder = Callable[[dict[str, Any]], str]
 FieldValueWidget = QLineEdit | QComboBox
+STEP_DRAG_MIME_TYPE = "application/x-aurora-builder-step"
 
 
 def _as_text(value: Any) -> str:
@@ -688,8 +691,8 @@ def build_protocol_from_visual_data(
 
 class AuroraStepCard(QFrame):
     changed = Signal()
-    move_up_requested = Signal(object)
-    move_down_requested = Signal(object)
+    drag_started = Signal(object)
+    drag_ended = Signal(object, bool)
     remove_requested = Signal(object)
     open_requested = Signal(object)
 
@@ -705,6 +708,7 @@ class AuroraStepCard(QFrame):
         self.field_choice_label: QLabel | None = None
         self.field_position = 0
         self._expanded = True
+        self._drag_press_position = None
         self.setObjectName("auroraStepCard")
         self.setProperty("stepType", step_type)
         self.setProperty("selected", False)
@@ -724,6 +728,13 @@ class AuroraStepCard(QFrame):
         self.index_label.setObjectName("auroraStepIndex")
         header_layout.addWidget(self.index_label, 0)
 
+        self.drag_handle = QLabel("⣿", self)
+        self.drag_handle.setObjectName("auroraStepDragHandle")
+        self.drag_handle.setToolTip("Drag this step from anywhere on the card")
+        self.drag_handle.setAccessibleName("Drag to reorder step")
+        self.drag_handle.setCursor(Qt.CursorShape.OpenHandCursor)
+        header_layout.addWidget(self.drag_handle, 0)
+
         self.title_label = QLabel(self)
         self.title_label.setObjectName("auroraStepTitle")
         header_layout.addWidget(self.title_label, 0)
@@ -738,18 +749,6 @@ class AuroraStepCard(QFrame):
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(4)
         header_layout.addLayout(button_layout)
-
-        self.move_up_button = QPushButton("Up", self)
-        self.move_up_button.setObjectName("auroraStepAction")
-        self.move_up_button.setFixedWidth(44)
-        self.move_up_button.clicked.connect(lambda: self.move_up_requested.emit(self))
-        button_layout.addWidget(self.move_up_button)
-
-        self.move_down_button = QPushButton("Down", self)
-        self.move_down_button.setObjectName("auroraStepAction")
-        self.move_down_button.setFixedWidth(58)
-        self.move_down_button.clicked.connect(lambda: self.move_down_requested.emit(self))
-        button_layout.addWidget(self.move_down_button)
 
         self.remove_button = QPushButton("Remove", self)
         self.remove_button.setObjectName("auroraStepAction")
@@ -770,6 +769,15 @@ class AuroraStepCard(QFrame):
             self._build_generic_fields(raw_values or {})
 
         self.update_header(0)
+
+    def _start_drag(self):
+        self.drag_started.emit(self)
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setData(STEP_DRAG_MIME_TYPE, b"step")
+        drag.setMimeData(mime_data)
+        result = drag.exec(Qt.DropAction.MoveAction)
+        self.drag_ended.emit(self, result == Qt.DropAction.MoveAction)
 
     def _build_generic_fields(self, raw_values: dict[str, Any]):
         spec = STEP_SPECS[self.step_type]
@@ -945,9 +953,27 @@ class AuroraStepCard(QFrame):
         return self._expanded
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self.is_expanded:
-            self.open_requested.emit(self)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_press_position = event.position().toPoint()
+            if not self.is_expanded:
+                self.open_requested.emit(self)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_press_position is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+            and (event.position().toPoint() - self._drag_press_position).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            self._drag_press_position = None
+            self._start_drag()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_press_position = None
+        super().mouseReleaseEvent(event)
 
     def summary_text(self) -> str:
         values = self.raw_values()
@@ -968,6 +994,47 @@ class AuroraStepCard(QFrame):
         return summary or "Configure this Aurora step."
 
 
+class AuroraStepsContainer(QWidget):
+    drag_moved = Signal(object)
+    drag_finished = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _accepts_step(event) -> bool:
+        return (
+            event.mimeData().hasFormat(STEP_DRAG_MIME_TYPE)
+            and isinstance(event.source(), AuroraStepCard)
+        )
+
+    def dragEnterEvent(self, event):
+        if self._accepts_step(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._accepts_step(event):
+            self.drag_moved.emit(event.position().toPoint())
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.drag_finished.emit()
+        event.accept()
+
+    def dropEvent(self, event):
+        if not self._accepts_step(event):
+            event.ignore()
+            return
+        self.drag_moved.emit(event.position().toPoint())
+        self.drag_finished.emit()
+        event.acceptProposedAction()
+
+
 class AuroraVisualBuilder(QWidget):
     changed = Signal()
     import_package_requested = Signal()
@@ -975,6 +1042,9 @@ class AuroraVisualBuilder(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.step_cards: list[AuroraStepCard] = []
+        self._dragged_card: AuroraStepCard | None = None
+        self._drag_original_order: list[AuroraStepCard] | None = None
+        self._drag_preview_order: list[AuroraStepCard] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1035,12 +1105,19 @@ class AuroraVisualBuilder(QWidget):
         self.steps_scroll.setFrameShape(QFrame.Shape.NoFrame)
         sequence_layout.addWidget(self.steps_scroll, 1)
 
-        self.steps_container = QWidget(self.steps_scroll)
+        self.steps_container = AuroraStepsContainer(self.steps_scroll)
+        self.steps_container.drag_moved.connect(self._on_step_drag_moved)
+        self.steps_container.drag_finished.connect(self._hide_drop_indicator)
         self.steps_layout = QVBoxLayout(self.steps_container)
         self.steps_layout.setContentsMargins(0, 0, 0, 0)
         self.steps_layout.setSpacing(10)
         self.steps_layout.addStretch(1)
         self.steps_scroll.setWidget(self.steps_container)
+
+        self.drop_indicator = QFrame(self.steps_container)
+        self.drop_indicator.setObjectName("auroraDropIndicator")
+        self.drop_indicator.setFixedHeight(3)
+        self.drop_indicator.hide()
 
         self.splitter.addWidget(self.sequence_frame)
 
@@ -1065,6 +1142,8 @@ class AuroraVisualBuilder(QWidget):
         )
         options_layout.addWidget(self.record_frame)
         options_layout.addWidget(self.safety_frame)
+        self.step_move_frame = self._build_step_move_section()
+        options_layout.addWidget(self.step_move_frame)
         options_layout.addStretch(1)
         self.splitter.addWidget(self.options_column)
         self.splitter.setStretchFactor(0, 3)
@@ -1117,6 +1196,40 @@ class AuroraVisualBuilder(QWidget):
 
         return frame
 
+    def _build_step_move_section(self) -> QFrame:
+        frame = QFrame(self.options_column)
+        frame.setObjectName("auroraSection")
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("Reorder selected step", frame)
+        title.setObjectName("auroraSectionTitle")
+        layout.addWidget(title)
+
+        self.selected_step_label = QLabel("No step selected", frame)
+        self.selected_step_label.setObjectName("auroraSectionDescription")
+        layout.addWidget(self.selected_step_label)
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(8)
+        layout.addLayout(buttons)
+
+        self.move_up_button = QPushButton("Move Up", frame)
+        self.move_up_button.setObjectName("auroraStepAction")
+        self.move_up_button.clicked.connect(lambda: self.move_selected_step(-1))
+        buttons.addWidget(self.move_up_button)
+
+        self.move_down_button = QPushButton("Move Down", frame)
+        self.move_down_button.setObjectName("auroraStepAction")
+        self.move_down_button.clicked.connect(lambda: self.move_selected_step(1))
+        buttons.addWidget(self.move_down_button)
+
+        return frame
+
     def raw_data(self) -> dict[str, Any]:
         record = self._raw_section(RECORD_FIELDS)
         safety = self._raw_section(SAFETY_FIELDS)
@@ -1137,8 +1250,8 @@ class AuroraVisualBuilder(QWidget):
     ):
         card = AuroraStepCard(step_type, raw_values=raw_values, parent=self.steps_container)
         card.changed.connect(self._refresh_cards)
-        card.move_up_requested.connect(lambda current: self.move_step(current, -1))
-        card.move_down_requested.connect(lambda current: self.move_step(current, 1))
+        card.drag_started.connect(self._begin_step_drag)
+        card.drag_ended.connect(self._finish_step_drag)
         card.remove_requested.connect(self.remove_step)
         card.open_requested.connect(self.set_expanded_card)
 
@@ -1192,16 +1305,155 @@ class AuroraVisualBuilder(QWidget):
     def move_step(self, card: AuroraStepCard, offset: int):
         if card not in self.step_cards:
             return
+        self.move_step_to(card, self.step_cards.index(card) + offset)
+
+    def move_selected_step(self, offset: int):
+        selected_card = self._selected_card()
+        if selected_card is not None:
+            self.move_step(selected_card, offset)
+
+    def move_step_to(self, card: AuroraStepCard, new_index: int):
+        if card not in self.step_cards:
+            return
 
         old_index = self.step_cards.index(card)
-        new_index = old_index + offset
-        if new_index < 0 or new_index >= len(self.step_cards):
+        new_index = max(0, min(new_index, len(self.step_cards) - 1))
+        if old_index == new_index:
             return
 
         self.step_cards.insert(new_index, self.step_cards.pop(old_index))
         self.steps_layout.removeWidget(card)
         self.steps_layout.insertWidget(new_index, card)
         self._refresh_cards()
+
+    def _selected_card(self) -> AuroraStepCard | None:
+        return next((card for card in self.step_cards if card.is_expanded), None)
+
+    def _begin_step_drag(self, card: AuroraStepCard):
+        if card not in self.step_cards or self._dragged_card is not None:
+            return
+
+        self._dragged_card = card
+        self._drag_original_order = list(self.step_cards)
+        self._drag_preview_order = list(self.step_cards)
+        self._set_card_dragging(card, True)
+
+    def _preview_index_at(self, y_position: int) -> int:
+        if self._dragged_card is None or self._drag_preview_order is None:
+            return 0
+
+        other_cards = [
+            card for card in self._drag_preview_order if card is not self._dragged_card
+        ]
+        for index, card in enumerate(other_cards):
+            if y_position < card.geometry().center().y():
+                return index
+        return len(other_cards)
+
+    def _on_step_drag_moved(self, position):
+        if self._dragged_card is None or self._drag_preview_order is None:
+            return
+
+        preview_index = self._preview_index_at(position.y())
+        self._move_drag_preview(preview_index)
+        self._show_drop_indicator(preview_index, self._drag_preview_order)
+        self._auto_scroll_steps(position)
+
+    def _move_drag_preview(self, new_index: int):
+        if self._dragged_card is None or self._drag_preview_order is None:
+            return
+
+        old_index = self._drag_preview_order.index(self._dragged_card)
+        if old_index == new_index:
+            return
+
+        self._drag_preview_order.insert(
+            new_index,
+            self._drag_preview_order.pop(old_index),
+        )
+        self.steps_layout.removeWidget(self._dragged_card)
+        self.steps_layout.insertWidget(new_index, self._dragged_card)
+        for index, card in enumerate(self._drag_preview_order):
+            card.update_header(index)
+        self.steps_layout.activate()
+
+    def _finish_step_drag(self, card: AuroraStepCard, accepted: bool):
+        if card is not self._dragged_card:
+            return
+
+        original_order = self._drag_original_order or list(self.step_cards)
+        preview_order = self._drag_preview_order or list(self.step_cards)
+        self._set_card_dragging(card, False)
+        self._hide_drop_indicator()
+
+        self._dragged_card = None
+        self._drag_original_order = None
+        self._drag_preview_order = None
+
+        if accepted:
+            self.step_cards = preview_order
+            self._refresh_cards()
+            return
+
+        self._set_step_layout_order(original_order)
+        for index, current_card in enumerate(original_order):
+            current_card.update_header(index)
+        self._refresh_step_move_controls()
+
+    def _set_step_layout_order(self, cards: list[AuroraStepCard]):
+        for card in cards:
+            self.steps_layout.removeWidget(card)
+        for index, card in enumerate(cards):
+            self.steps_layout.insertWidget(index, card)
+        self.steps_layout.activate()
+
+    @staticmethod
+    def _set_card_dragging(card: AuroraStepCard, dragging: bool):
+        card.setProperty("dragging", dragging)
+        card.style().unpolish(card)
+        card.style().polish(card)
+        card.update()
+
+    def _show_drop_indicator(
+        self,
+        drop_index: int,
+        card_order: list[AuroraStepCard] | None = None,
+    ):
+        cards = self.step_cards if card_order is None else card_order
+        if not cards:
+            return
+
+        spacing = max(0, self.steps_layout.spacing())
+        if drop_index == 0:
+            y_position = cards[0].geometry().top() - spacing // 2
+        elif drop_index == len(cards):
+            y_position = cards[-1].geometry().bottom() + spacing // 2
+        else:
+            previous_bottom = cards[drop_index - 1].geometry().bottom()
+            next_top = cards[drop_index].geometry().top()
+            y_position = (previous_bottom + next_top) // 2
+
+        self.drop_indicator.setGeometry(
+            4,
+            max(0, y_position - 1),
+            max(0, self.steps_container.width() - 8),
+            3,
+        )
+        self.drop_indicator.raise_()
+        self.drop_indicator.show()
+
+    def _hide_drop_indicator(self):
+        self.drop_indicator.hide()
+
+    def _auto_scroll_steps(self, position):
+        viewport_position = self.steps_container.mapTo(self.steps_scroll.viewport(), position)
+        scroll_bar = self.steps_scroll.verticalScrollBar()
+        margin = 36
+        scroll_amount = 24
+        if viewport_position.y() < margin:
+            scroll_bar.setValue(scroll_bar.value() - scroll_amount)
+        elif viewport_position.y() > self.steps_scroll.viewport().height() - margin:
+            scroll_bar.setValue(scroll_bar.value() + scroll_amount)
 
     def set_context_widget(self, widget: QWidget | None):
         while self.context_widget_layout.count():
@@ -1216,6 +1468,7 @@ class AuroraVisualBuilder(QWidget):
     def set_expanded_card(self, card: AuroraStepCard | None):
         for current in self.step_cards:
             current.set_expanded(current is card if card is not None else False)
+        self._refresh_step_move_controls()
 
     def load_protocol_data(self, protocol_data: dict[str, Any]):
         self._set_section(RECORD_FIELDS, protocol_data.get("record", {}))
@@ -1237,8 +1490,6 @@ class AuroraVisualBuilder(QWidget):
         available_tags: list[str] = []
         for index, card in enumerate(self.step_cards):
             card.update_header(index)
-            card.move_up_button.setEnabled(index > 0)
-            card.move_down_button.setEnabled(index < len(self.step_cards) - 1)
             if card.step_type == "loop":
                 card.set_tag_options(available_tags)
             elif card.step_type == "tag":
@@ -1249,7 +1500,26 @@ class AuroraVisualBuilder(QWidget):
         self.sequence_meta_label.setText(
             "No steps yet" if count == 0 else f"{count} step{'s' if count != 1 else ''}"
         )
+        self._refresh_step_move_controls()
         self.changed.emit()
+
+    def _refresh_step_move_controls(self):
+        selected_card = self._selected_card()
+        if selected_card is None:
+            self.selected_step_label.setText("No step selected")
+            self.move_up_button.setEnabled(False)
+            self.move_down_button.setEnabled(False)
+            return
+
+        index = self.step_cards.index(selected_card)
+        step_label = (
+            "Loop"
+            if selected_card.step_type == "loop"
+            else STEP_SPECS[selected_card.step_type].label
+        )
+        self.selected_step_label.setText(f"Step {index + 1}: {step_label}")
+        self.move_up_button.setEnabled(index > 0)
+        self.move_down_button.setEnabled(index < len(self.step_cards) - 1)
 
     def _raw_section(self, field_specs: tuple[BuilderFieldSpec, ...]) -> dict[str, Any]:
         values: dict[str, Any] = {}

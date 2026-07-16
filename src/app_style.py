@@ -115,6 +115,13 @@ QFrame#auroraStepCard[selected="true"] QLabel#auroraStepIndex {
     color: #ffffff;
 }
 
+QFrame#auroraStepCard[dragging="true"] {
+    background: #dceeff;
+    border-top-color: #2f6f9f;
+    border-right-color: #2f6f9f;
+    border-bottom-color: #2f6f9f;
+}
+
 QLabel#graphPanelTitle {
     color: #1f2a36;
     font-size: 14px;
@@ -147,6 +154,22 @@ QLabel#auroraStepIndex {
     font-weight: 700;
     min-width: 22px;
     padding: 2px 6px;
+}
+
+QLabel#auroraStepDragHandle {
+    color: #708090;
+    font-size: 18px;
+    padding: 0 3px;
+}
+
+QLabel#auroraStepDragHandle:hover {
+    color: #2f6f9f;
+}
+
+QScrollArea#auroraStepsScroll QFrame#auroraDropIndicator {
+    background: #2f6f9f;
+    border: 0;
+    border-radius: 1px;
 }
 
 QLabel#auroraCompactFieldLabel {
