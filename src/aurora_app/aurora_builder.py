@@ -380,8 +380,7 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
             _display_value(params, "ramp_rate", "degC/min"),
             f"wait {_display_value(params, 'wait_after_s', 's')}"
             if params.get("wait_after_s")
-            else "",
-            "INTE IMPLEMENTERAD",
+            else ""
         ),
     ),
     "constant_current": BuilderStepSpec(
@@ -540,6 +539,46 @@ def default_visual_builder_data() -> dict[str, Any]:
     }
 
 
+def visual_steps_from_protocol_data(protocol_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert canonical Aurora protocol steps into visual-builder step data."""
+    method = protocol_data.get("method", [])
+    if not isinstance(method, list):
+        raise ValueError("Imported package method data must be a list.")
+
+    visual_steps: list[dict[str, Any]] = []
+    for raw_step in method:
+        if not isinstance(raw_step, dict):
+            raise ValueError("Every imported method step must be an object.")
+
+        step = {key: value for key, value in raw_step.items() if key != "id"}
+        step_type = step.get("step")
+        if step_type == "loop":
+            loop_target = step.pop("loop_to", None)
+            if isinstance(loop_target, int) and not isinstance(loop_target, bool):
+                step["loop_to_mode"] = "step"
+                step["loop_to_step"] = loop_target
+                step["loop_to_tag"] = ""
+            elif isinstance(loop_target, str):
+                step["loop_to_mode"] = "tag"
+                step["loop_to_tag"] = loop_target
+                step["loop_to_step"] = ""
+            else:
+                raise ValueError("An imported Loop step has an invalid target.")
+        elif step_type == "impedance_spectroscopy":
+            amplitude_v = step.pop("amplitude_V", None)
+            amplitude_ma = step.pop("amplitude_mA", None)
+            if amplitude_ma is not None:
+                step["amplitude"] = amplitude_ma
+                step["amplitude_unit"] = "mA"
+            else:
+                step["amplitude"] = amplitude_v
+                step["amplitude_unit"] = "V"
+
+        visual_steps.append(step)
+
+    return visual_steps
+
+
 def default_protocol_data() -> dict[str, Any]:
     return {
         **default_visual_builder_data(),
@@ -652,7 +691,7 @@ class AuroraStepCard(QFrame):
     move_up_requested = Signal(object)
     move_down_requested = Signal(object)
     remove_requested = Signal(object)
-    expanded_requested = Signal(object)
+    open_requested = Signal(object)
 
     def __init__(self, step_type: str, raw_values: dict[str, Any] | None = None, parent=None):
         super().__init__(parent)
@@ -717,13 +756,6 @@ class AuroraStepCard(QFrame):
         self.remove_button.setFixedWidth(72)
         self.remove_button.clicked.connect(lambda: self.remove_requested.emit(self))
         button_layout.addWidget(self.remove_button)
-
-        self.toggle_button = QPushButton(self)
-        self.toggle_button.setObjectName("auroraStepAction")
-        self.toggle_button.setText("Hide")
-        self.toggle_button.setFixedWidth(48)
-        self.toggle_button.clicked.connect(lambda: self.expanded_requested.emit(self))
-        button_layout.addWidget(self.toggle_button)
 
         self.form_widget = QWidget(self)
         self.form_layout = QGridLayout(self.form_widget)
@@ -902,7 +934,6 @@ class AuroraStepCard(QFrame):
         selection_changed = self.property("selected") != expanded
         self.setProperty("selected", expanded)
         self.form_widget.setVisible(expanded)
-        self.toggle_button.setText("Hide" if expanded else "Edit")
         if selection_changed:
             for widget in (self, self.index_label):
                 widget.style().unpolish(widget)
@@ -912,6 +943,11 @@ class AuroraStepCard(QFrame):
     @property
     def is_expanded(self) -> bool:
         return self._expanded
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self.is_expanded:
+            self.open_requested.emit(self)
+        super().mousePressEvent(event)
 
     def summary_text(self) -> str:
         values = self.raw_values()
@@ -934,6 +970,7 @@ class AuroraStepCard(QFrame):
 
 class AuroraVisualBuilder(QWidget):
     changed = Signal()
+    import_package_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -973,6 +1010,13 @@ class AuroraVisualBuilder(QWidget):
             label = "Loop" if step_key == "loop" else STEP_SPECS[step_key].label
             self.step_type_combo.addItem(label, step_key)
         sequence_header.addWidget(self.step_type_combo)
+
+        self.import_package_button = QPushButton("Import Package", self.sequence_frame)
+        self.import_package_button.setObjectName("auroraAddStepButton")
+        self.import_package_button.clicked.connect(
+            lambda: self.import_package_requested.emit()
+        )
+        sequence_header.addWidget(self.import_package_button)
 
         self.add_step_button = QPushButton("Add Step", self.sequence_frame)
         self.add_step_button.setObjectName("auroraAddStepButton")
@@ -1083,7 +1127,10 @@ class AuroraVisualBuilder(QWidget):
         return build_protocol_from_visual_data(self.raw_data())
 
     def add_selected_step(self):
-        self.add_step(self.step_type_combo.currentData())
+        self.add_step(
+            self.step_type_combo.currentData(),
+            index=self._insertion_index_after_selected(),
+        )
 
     def add_step(
         self, step_type: str, raw_values: dict[str, Any] | None = None, index: int | None = None
@@ -1093,7 +1140,7 @@ class AuroraVisualBuilder(QWidget):
         card.move_up_requested.connect(lambda current: self.move_step(current, -1))
         card.move_down_requested.connect(lambda current: self.move_step(current, 1))
         card.remove_requested.connect(self.remove_step)
-        card.expanded_requested.connect(self.toggle_card_expanded)
+        card.open_requested.connect(self.set_expanded_card)
 
         insert_index = (
             len(self.step_cards) if index is None else max(0, min(index, len(self.step_cards)))
@@ -1102,6 +1149,37 @@ class AuroraVisualBuilder(QWidget):
         self.steps_layout.insertWidget(insert_index, card)
         self.set_expanded_card(card)
         self._refresh_cards()
+
+    def insert_steps_after_selected(self, raw_steps: list[dict[str, Any]]) -> None:
+        if not raw_steps:
+            raise ValueError("The imported package does not contain any method steps.")
+
+        for raw_step in raw_steps:
+            if not isinstance(raw_step, dict):
+                raise ValueError("Every imported method step must be an object.")
+            if raw_step.get("step") not in STEP_ORDER:
+                raise ValueError(f"Unsupported imported step type: {raw_step.get('step')}")
+
+        insert_index = self._insertion_index_after_selected()
+        for offset, raw_step in enumerate(raw_steps):
+            imported_step = dict(raw_step)
+            if (
+                imported_step["step"] == "loop"
+                and imported_step.get("loop_to_mode") == "step"
+            ):
+                target = parse_required_int(imported_step.get("loop_to_step"))
+                imported_step["loop_to_step"] = target + insert_index
+            self.add_step(
+                imported_step["step"],
+                raw_values=imported_step,
+                index=insert_index + offset,
+            )
+
+    def _insertion_index_after_selected(self) -> int:
+        for index, card in enumerate(self.step_cards):
+            if card.is_expanded:
+                return index + 1
+        return len(self.step_cards)
 
     def remove_step(self, card: AuroraStepCard):
         if card not in self.step_cards:
@@ -1134,12 +1212,6 @@ class AuroraVisualBuilder(QWidget):
 
         if widget is not None:
             self.context_widget_layout.addWidget(widget)
-
-    def toggle_card_expanded(self, card: AuroraStepCard):
-        if card.is_expanded:
-            card.set_expanded(False)
-            return
-        self.set_expanded_card(card)
 
     def set_expanded_card(self, card: AuroraStepCard | None):
         for current in self.step_cards:

@@ -24,8 +24,12 @@ from PySide6.QtWidgets import (
 )
 
 from src.app_style import APP_STYLESHEET
-from src.aurora_app.aurora_builder import AuroraVisualBuilder
+from src.aurora_app.aurora_builder import (
+    AuroraVisualBuilder,
+    visual_steps_from_protocol_data,
+)
 from src.aurora_app.aurora_methods import (
+    AuroraMethodPackage,
     build_aurora_package,
     load_aurora_package,
 )
@@ -66,6 +70,7 @@ class AuroraMethodEditor(QWidget):
         layout.addWidget(self.script_editor, 1)
 
         self.visual_builder = AuroraVisualBuilder(self)
+        self.visual_builder.import_package_requested.connect(self.import_package_file)
         layout.addWidget(self.visual_builder, 1)
 
         self.run_mode_combo.currentIndexChanged.connect(self.rebuild_mode)
@@ -112,25 +117,56 @@ class AuroraMethodEditor(QWidget):
         )
 
     def open_package_file(self):
+        selected_package = self._select_package_file("Open")
+        if selected_package is None:
+            return
+
+        path, package = selected_package
+        self.loaded_package_path = path
+        self.load_package(package)
+
+    def import_package_file(self):
+        selected_package = self._select_package_file("Import")
+        if selected_package is None:
+            return
+
+        _path, package = selected_package
+        try:
+            if package.source_mode == "aurora_visual" and isinstance(
+                package.source_payload, dict
+            ):
+                raw_steps = package.source_payload.get("method", [])
+            else:
+                raw_steps = visual_steps_from_protocol_data(package.protocol_json)
+            self.visual_builder.insert_steps_after_selected(raw_steps)
+        except Exception as exc:
+            QMessageBox.warning(self, "Import failed", f"Could not import package:\n{exc}")
+
+    def _select_package_file(
+        self, action: str
+    ) -> tuple[Path, AuroraMethodPackage] | None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open Aurora Method Package",
+            f"{action} Aurora Method Package",
             "",
             "Aurora Method Packages (*.psmethod);;JSON Files (*.json);;All Files (*)",
         )
         if not file_path:
-            return
+            return None
 
         try:
             package = load_aurora_package(file_path)
         except Exception as exc:
-            QMessageBox.warning(self, "Open failed", f"Could not open package:\n{exc}")
-            return
+            QMessageBox.warning(
+                self,
+                f"{action} failed",
+                f"Could not {action.lower()} package:\n{exc}",
+            )
+            return None
 
-        self.loaded_package_path = Path(file_path)
-        self.load_package(package)
+        return Path(file_path), package
 
-    def load_package(self, package):
+    def load_package(self, package: AuroraMethodPackage):
         self.method_name_edit.setText(package.name)
         run_mode = package.source_mode
         index = self.run_mode_combo.findData(run_mode)
