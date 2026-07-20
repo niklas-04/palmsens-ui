@@ -1329,6 +1329,18 @@ class AuroraVisualBuilder(QWidget):
         buttons.setSpacing(6)
         layout.addLayout(buttons)
 
+        self.copy_step_button = QPushButton("Copy step", frame)
+        self.copy_step_button.setObjectName("auroraStepAction")
+        self.copy_step_button.setToolTip(
+            "Copy selected step(s) directly after the selection"
+        )
+        self.copy_step_button.setAccessibleName(
+            "Copy selected step(s) after the selection"
+        )
+        self.copy_step_button.setFixedHeight(30)
+        self.copy_step_button.clicked.connect(self.copy_steps_after_selection)
+        buttons.addWidget(self.copy_step_button)
+
         self.move_up_button = QPushButton(frame)
         self.move_up_button.setObjectName("auroraStepAction")
         self.move_up_button.setIcon(
@@ -1430,6 +1442,13 @@ class AuroraVisualBuilder(QWidget):
         mime_data.setData(STEP_CLIPBOARD_MIME_TYPE, payload.encode("utf-8"))
         mime_data.setText(payload)
         QApplication.clipboard().setMimeData(mime_data)
+        self.steps_container.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    def copy_steps_after_selection(self):
+        if not self.selected_cards:
+            return
+        self.copy_selected_steps()
+        self.paste_copied_steps()
 
     def paste_copied_steps(self):
         mime_data = QApplication.clipboard().mimeData()
@@ -1571,6 +1590,7 @@ class AuroraVisualBuilder(QWidget):
         for card in self.step_cards:
             card.set_selected(card in self.selected_cards)
         self._update_sequence_meta()
+        self.copy_step_button.setEnabled(bool(self.selected_cards))
 
     def _begin_marquee_selection(self, position, modifiers):
         self.steps_container.setFocus()
