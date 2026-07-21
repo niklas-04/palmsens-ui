@@ -8,6 +8,7 @@ if __package__ in {None, ""}:
 import pypalmsens as ps
 from src.app_style import APP_STYLESHEET
 from src.aurora_app.aurora_methods import (
+    AURORA_ADDITIONAL_MEASUREMENT_DESCRIPTIONS,
     AURORA_ADDITIONAL_MEASUREMENT_OPTIONS,
     AURORA_DEVICE_MEASUREMENT_TYPES,
     AURORA_DEVICE_OPTIONS,
@@ -459,7 +460,10 @@ class method_configuration_dialog(QDialog):
         self.additional_measurement_layout.setVerticalSpacing(6)
         for index, (var_type, label) in enumerate(AURORA_ADDITIONAL_MEASUREMENT_OPTIONS):
             checkbox = QCheckBox(label, self.additional_measurement_widget)
-            checkbox.setToolTip(f"Measure MethodSCRIPT variable type {var_type} with add_meas.")
+            description = AURORA_ADDITIONAL_MEASUREMENT_DESCRIPTIONS[var_type]
+            checkbox.setToolTip(
+                f"{description}\nMethodSCRIPT variable type: {var_type} (added with add_meas)."
+            )
             self.additional_measurement_checks[var_type] = checkbox
             self.additional_measurement_layout.addWidget(checkbox, index // 2, index % 2)
         package_layout.addWidget(self.additional_measurement_widget)

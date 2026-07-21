@@ -34,6 +34,21 @@ AURORA_ADDITIONAL_MEASUREMENT_OPTIONS = (
     ("ef", "ef Board temperature"),
 )
 
+# MethodSCRIPT v1.9, Appendix C: Variable types.
+AURORA_ADDITIONAL_MEASUREMENT_DESCRIPTIONS = {
+    "ab": "Measured working-electrode (WE) voltage relative to the reference electrode (RE).",
+    "ac": "Measured counter-electrode (CE) voltage relative to ground.",
+    "ae": "Measured reference-electrode (RE) voltage relative to ground.",
+    "ag": "Measured working-electrode (WE) voltage relative to the counter electrode (CE).",
+    "as": "Measured analog input 0 voltage.",
+    "ah": "Measured second-sense (S2) voltage relative to the reference electrode (RE).",
+    "ai": "Measured sense-electrode (SE) voltage relative to second sense (S2).",
+    "ba": "Measured working-electrode (WE) current.",
+    "bb": "Measured second working-electrode (WE2/bipot) current.",
+    "ed": "Measured instrument CPU temperature in degrees Celsius.",
+    "ef": "Measured instrument board temperature in degrees Celsius.",
+}
+
 AURORA_DEVICE_MEASUREMENT_TYPES = {
     "emstat4_hr": {"ab", "ac", "ae", "ag", "as", "ba"},
     "emstat4_lr": {"ab", "ac", "ae", "ag", "as", "ba"},
