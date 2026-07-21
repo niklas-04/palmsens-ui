@@ -317,6 +317,16 @@ SAFETY_FIELDS: tuple[BuilderFieldSpec, ...] = (
     _unit_field("delay_s", "Safety delay", "", parse_optional_float, TIME_UNITS),
 )
 
+GLOBAL_FIELDS: tuple[BuilderFieldSpec, ...] = (
+    _unit_field(
+        "temperature_ramp_rate",
+        "Temperature ramp rate",
+        "0.35",
+        parse_required_float,
+        TEMPERATURE_RATE_UNITS,
+    ),
+)
+
 
 def _summary_from_parts(*parts: str) -> str:
     return " | ".join(part for part in parts if part)
@@ -378,13 +388,17 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
                 "wait_after_s", "Wait after target", "60", parse_required_float, TIME_UNITS
             ),
             _unit_field(
-                "ramp_rate", "Ramp rate", "0.35", parse_required_float, TEMPERATURE_RATE_UNITS
+                "ramp_rate",
+                "Ramp rate override",
+                "",
+                parse_optional_float,
+                TEMPERATURE_RATE_UNITS,
             ),
         ),
         builder=lambda params: Temperature(**params),
         summary_builder=lambda params: _summary_from_parts(
             _display_value(params, "until_temp_c", "degC"),
-            _display_value(params, "ramp_rate", "degC/min"),
+            _display_value(params, "ramp_rate", "degC/min") or "global ramp rate",
             f"wait {_display_value(params, 'wait_after_s', 's')}"
             if params.get("wait_after_s")
             else ""
@@ -533,6 +547,7 @@ STEP_ORDER = (
 
 def default_visual_builder_data() -> dict[str, Any]:
     return {
+        "globals": {"temperature_ramp_rate": "0.35"},
         "record": {"time_s": "10", "voltage_V": "0.01", "current_mA": ""},
         "safety": {
             "max_voltage_V": "4.3",
@@ -643,6 +658,7 @@ def _clean_none_values(values: dict[str, Any]) -> dict[str, Any]:
 def build_protocol_from_visual_data(
     protocol_data: dict[str, Any],
 ) -> aurora_unicycler.CyclingProtocol:
+    global_values = _parse_fields(GLOBAL_FIELDS, protocol_data.get("globals", {}))
     record = aurora_unicycler.RecordParams(
         **_clean_none_values(_parse_fields(RECORD_FIELDS, protocol_data.get("record", {})))
     )
@@ -681,6 +697,8 @@ def build_protocol_from_visual_data(
         if spec.field_choice is not None:
             raw_step = spec.field_choice.selected_values(raw_step)
         params = _clean_none_values(_parse_fields(spec.fields, raw_step))
+        if step_type == "temperature":
+            params.setdefault("ramp_rate", global_values["temperature_ramp_rate"])
         method_steps.append(spec.builder(params))
 
     if not method_steps:
@@ -1192,10 +1210,15 @@ class AuroraVisualBuilder(QWidget):
             "Recording",
             RECORD_FIELDS,
         )
+        self.global_frame = self._build_section(
+            "Globals",
+            GLOBAL_FIELDS,
+        )
         self.safety_frame = self._build_section(
             "Safety",
             SAFETY_FIELDS,
         )
+        options_layout.addWidget(self.global_frame)
         options_layout.addWidget(self.record_frame)
         options_layout.addWidget(self.safety_frame)
         self.step_move_frame = self._build_step_move_section()
@@ -1239,14 +1262,10 @@ class AuroraVisualBuilder(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
-        title = QLabel("Available steps", frame)
+        title = QLabel("Steps", frame)
         title.setObjectName("auroraCardTitle")
         layout.addWidget(title)
 
-        description = QLabel("Adds after the active step.", frame)
-        description.setObjectName("auroraCardDescription")
-        description.setWordWrap(True)
-        layout.addWidget(description)
 
         self.step_type_buttons: dict[str, QPushButton] = {}
         for step_type in STEP_ORDER:
@@ -1366,10 +1385,16 @@ class AuroraVisualBuilder(QWidget):
         return frame
 
     def raw_data(self) -> dict[str, Any]:
+        global_values = self._raw_section(GLOBAL_FIELDS)
         record = self._raw_section(RECORD_FIELDS)
         safety = self._raw_section(SAFETY_FIELDS)
         method = [card.raw_values() for card in self.step_cards]
-        return {"record": record, "safety": safety, "method": method}
+        return {
+            "globals": global_values,
+            "record": record,
+            "safety": safety,
+            "method": method,
+        }
 
     def build_protocol(self) -> aurora_unicycler.CyclingProtocol:
         return build_protocol_from_visual_data(self.raw_data())
@@ -1769,6 +1794,7 @@ class AuroraVisualBuilder(QWidget):
         self._refresh_step_move_controls()
 
     def load_protocol_data(self, protocol_data: dict[str, Any]):
+        self._set_section(GLOBAL_FIELDS, protocol_data.get("globals", {}))
         self._set_section(RECORD_FIELDS, protocol_data.get("record", {}))
         self._set_section(SAFETY_FIELDS, protocol_data.get("safety", {}))
 
