@@ -29,6 +29,11 @@ class MeasurementSegment:
     execution_index: int | None = None
 
 
+@dataclass(frozen=True)
+class AuroraStepCompleted:
+    segment: MeasurementSegment
+
+
 @dataclass
 class LogicalMeasurementRun:
     title: str
