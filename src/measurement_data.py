@@ -39,6 +39,11 @@ class MeasurementSegment:
     chamber_temperature_samples: tuple[TemperatureSample, ...] = ()
 
 
+@dataclass(frozen=True)
+class AuroraStepCompleted:
+    segment: MeasurementSegment
+
+
 @dataclass
 class LogicalMeasurementRun:
     title: str

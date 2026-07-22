@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 import pypalmsens as ps
 
 from src.aurora_app.aurora_methods import AuroraStepwiseMethod
-from src.measurement_data import LogicalMeasurementRun, MeasurementSegment, TemperatureSample
+from src.measurement_data import AuroraStepCompleted, LogicalMeasurementRun, MeasurementSegment, TemperatureSample
 from src.temperature_chamber.temperature_controller import TemperatureController, TemperatureProgress
 
 
@@ -128,20 +128,20 @@ class measurement_worker(QObject):
                 if temperature_samples:
                     last_chamber_temperature_c = temperature_samples[-1].temperature_c
                     last_chamber_setpoint_c = temperature_samples[-1].setpoint_c
-                run.add_segment(
-                    MeasurementSegment(
-                        index=len(run.segments) + 1,
-                        label=action.label,
-                        source=measurement,
-                        elapsed_offset_s=segment_offset_s,
-                        source_step_index=action.source_step_index,
-                        step_type=action.step_type,
-                        execution_index=action.execution_index,
-                        chamber_temperature_c=last_chamber_temperature_c,
-                        chamber_setpoint_c=last_chamber_setpoint_c,
-                        chamber_temperature_samples=tuple(temperature_samples),
-                    )
+                segment = MeasurementSegment(
+                    index=len(run.segments) + 1,
+                    label=action.label,
+                    source=measurement,
+                    elapsed_offset_s=segment_offset_s,
+                    source_step_index=action.source_step_index,
+                    step_type=action.step_type,
+                    execution_index=action.execution_index,
+                    chamber_temperature_c=last_chamber_temperature_c,
+                    chamber_setpoint_c=last_chamber_setpoint_c,
+                    chamber_temperature_samples=tuple(temperature_samples),
                 )
+                run.add_segment(segment)
+                self.progress.emit(AuroraStepCompleted(segment))
         finally:
             if temperature_controller is not None:
                 temperature_controller.close()
