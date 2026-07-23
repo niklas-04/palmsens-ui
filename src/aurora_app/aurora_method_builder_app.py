@@ -10,7 +10,6 @@ if __package__ in {None, ""}:
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QLabel,
@@ -26,6 +25,7 @@ from PySide6.QtWidgets import (
 from src.app_style import APP_STYLESHEET
 from src.aurora_app.aurora_builder import (
     AuroraVisualBuilder,
+    NoScrollComboBox,
     visual_steps_from_protocol_data,
 )
 from src.aurora_app.aurora_methods import (
@@ -53,7 +53,7 @@ class AuroraMethodEditor(QWidget):
         self.method_name_edit = QLineEdit("Aurora Method", self)
         self.header_form.addRow("Method name", self.method_name_edit)
 
-        self.run_mode_combo = QComboBox(self)
+        self.run_mode_combo = NoScrollComboBox(self)
         self.run_mode_combo.addItem("Aurora Visual Builder", "aurora_visual")
         self.run_mode_combo.addItem("Aurora Unicycler JSON", "aurora_json")
         self.run_mode_combo.addItem("Aurora Unicycler Python", "aurora_python")

@@ -8,7 +8,7 @@ from typing import Any
 import aurora_unicycler
 from aurora_unicycler._core import Temperature
 from PySide6.QtCore import QMimeData, QRect, Qt, Signal
-from PySide6.QtGui import QDrag, QKeySequence, QShortcut
+from PySide6.QtGui import QDrag, QKeySequence, QShortcut, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -31,9 +31,18 @@ from PySide6.QtWidgets import (
 
 Parser = Callable[[Any], Any]
 SummaryBuilder = Callable[[dict[str, Any]], str]
-FieldValueWidget = QLineEdit | QComboBox
 STEP_DRAG_MIME_TYPE = "application/x-aurora-builder-step"
 STEP_CLIPBOARD_MIME_TYPE = "application/x-aurora-builder-steps+json"
+
+
+class NoScrollComboBox(QComboBox):
+    """A combo box that does not change selection in response to wheel input."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
+
+
+FieldValueWidget = QLineEdit | NoScrollComboBox
 
 
 def _as_text(value: Any) -> str:
@@ -208,7 +217,7 @@ def _create_field_editor(
 ) -> tuple[FieldValueWidget, QWidget, QComboBox | None]:
     raw_value = raw_values.get(field.key, field.default)
     if field.widget_kind == "bool":
-        value_widget = QComboBox(parent)
+        value_widget = NoScrollComboBox(parent)
         value_widget.addItem("No", False)
         value_widget.addItem("Yes", True)
         value_widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
@@ -226,7 +235,7 @@ def _create_field_editor(
     layout.setSpacing(4)
     layout.addWidget(value_widget, 1)
 
-    unit_widget = QComboBox(container)
+    unit_widget = NoScrollComboBox(container)
     for option in field.unit_options:
         unit_widget.addItem(option.label, option.key)
     _set_unit_widget(field, unit_widget, raw_values)
@@ -547,11 +556,11 @@ STEP_ORDER = (
 
 def default_visual_builder_data() -> dict[str, Any]:
     return {
-        "globals": {"temperature_ramp_rate": "0.35"},
-        "record": {"time_s": "10", "voltage_V": "0.01", "current_mA": ""},
+        "globals": {"temperature_ramp_rate": ""},
+        "record": {"time_s": "", "voltage_V": "", "current_mA": ""},
         "safety": {
-            "max_voltage_V": "4.3",
-            "min_voltage_V": "2.5",
+            "max_voltage_V": "",
+            "min_voltage_V": "",
             "max_current_mA": "",
             "min_current_mA": "",
             "max_capacity_mAh": "",
@@ -602,40 +611,7 @@ def visual_steps_from_protocol_data(protocol_data: dict[str, Any]) -> list[dict[
 
 
 def default_protocol_data() -> dict[str, Any]:
-    return {
-        **default_visual_builder_data(),
-        "method": [
-            {"step": "tag", "tag": "cycle"},
-            {
-                "step": "constant_current",
-                "rate_C": "0.5",
-                "current_mA": "",
-                "until_time_s": "10800",
-                "until_voltage_V": "4.2",
-            },
-            {
-                "step": "constant_voltage",
-                "voltage_V": "4.2",
-                "until_time_s": "3600",
-                "until_rate_C": "0.05",
-                "until_current_mA": "",
-            },
-            {
-                "step": "constant_current",
-                "rate_C": "-0.5",
-                "current_mA": "",
-                "until_time_s": "10800",
-                "until_voltage_V": "3.0",
-            },
-            {
-                "step": "loop",
-                "loop_to_mode": "tag",
-                "loop_to_tag": "cycle",
-                "loop_to_step": "",
-                "cycle_count": "10",
-            },
-        ],
-    }
+    return default_visual_builder_data()
 
 
 def _parse_fields(
@@ -790,10 +766,17 @@ class AuroraStepCard(QFrame):
         self.form_layout.setVerticalSpacing(4)
         layout.addWidget(self.form_widget)
 
+        if raw_values is None:
+            raw_values = (
+                {"cycle_count": ""}
+                if self.step_type == "loop"
+                else {field.key: "" for field in STEP_SPECS[self.step_type].fields}
+            )
+
         if self.step_type == "loop":
-            self._build_loop_fields(raw_values or {})
+            self._build_loop_fields(raw_values)
         else:
-            self._build_generic_fields(raw_values or {})
+            self._build_generic_fields(raw_values)
 
         self.update_header(0)
 
@@ -809,7 +792,7 @@ class AuroraStepCard(QFrame):
     def _build_generic_fields(self, raw_values: dict[str, Any]):
         spec = STEP_SPECS[self.step_type]
         if spec.field_choice is not None:
-            self.field_choice_widget = QComboBox(self)
+            self.field_choice_widget = NoScrollComboBox(self)
             for option in spec.field_choice.options:
                 self.field_choice_widget.addItem(option.label, option.key)
             selected = spec.field_choice.selected_key(raw_values)
@@ -842,7 +825,7 @@ class AuroraStepCard(QFrame):
                 self._add_compact_field(field.label, display_widget)
 
     def _build_loop_fields(self, raw_values: dict[str, Any]):
-        self.loop_target_mode = QComboBox(self)
+        self.loop_target_mode = NoScrollComboBox(self)
         self.loop_target_mode.addItem("Tag", "tag")
         self.loop_target_mode.addItem("Step number", "step")
         raw_mode = _as_text(raw_values.get("loop_to_mode", "tag")) or "tag"
@@ -851,7 +834,7 @@ class AuroraStepCard(QFrame):
         self.loop_target_mode.currentIndexChanged.connect(self._on_field_changed)
         self._add_compact_field("Loop target", self.loop_target_mode)
 
-        self.loop_target_tag = QComboBox(self)
+        self.loop_target_tag = NoScrollComboBox(self)
         self.loop_target_tag.setEditable(True)
         self.loop_target_tag.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         initial_tag = _as_text(raw_values.get("loop_to_tag", ""))
