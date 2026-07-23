@@ -49,7 +49,7 @@ class TemperatureProgress:
     target_c: float
     temperature_c: float | None
     setpoint_c: float | None
-    stable_for_s: float
+    wait_elapsed_s: float
     message: str
 
 
@@ -121,16 +121,17 @@ class TemperatureController:
         self._log(line)
         return self._parse_status(line)
 
-    def wait_until_stable(
+    def wait_for_temperature_step(
         self,
         target_c: float,
-        dwell_s: float,
+        wait_s: float,
         abort_check: Callable[[], bool],
         progress_callback: Callable[[TemperatureProgress], None] | None = None,
+        timer_starts_immediately: bool = True,
     ) -> TemperatureStatus:
+        """Wait for the step timer, optionally without requiring the target temperature."""
         started_at = time.monotonic()
-        stable_since = None
-        last_status = None
+        wait_started_at = started_at if timer_starts_immediately else None
 
         while True:
             if abort_check():
@@ -138,7 +139,8 @@ class TemperatureController:
                     self.stop()
                 raise RuntimeError("Temperature step aborted.")
 
-            elapsed = time.monotonic() - started_at
+            now = time.monotonic()
+            elapsed = now - started_at
             if self.settings.timeout_s is not None and elapsed > self.settings.timeout_s:
                 raise RuntimeError("Temperature step timed out.")
 
@@ -147,15 +149,17 @@ class TemperatureController:
             if status is None:
                 continue
 
-            last_status = status
-            error_c = abs(status.temperature_c - target_c)
-            if error_c <= self.settings.tolerance_c:
-                if stable_since is None:
-                    stable_since = time.monotonic()
-                stable_for_s = time.monotonic() - stable_since
-            else:
-                stable_since = None
-                stable_for_s = 0.0
+            if not timer_starts_immediately:
+                error_c = abs(status.temperature_c - target_c)
+                if error_c <= self.settings.tolerance_c:
+                    if wait_started_at is None:
+                        wait_started_at = now
+                else:
+                    wait_started_at = None
+
+            wait_elapsed_s = (
+                now - wait_started_at if wait_started_at is not None else 0.0
+            )
 
             if progress_callback is not None:
                 progress_callback(
@@ -163,16 +167,19 @@ class TemperatureController:
                         target_c=target_c,
                         temperature_c=status.temperature_c,
                         setpoint_c=status.setpoint_c,
-                        stable_for_s=stable_for_s,
-                        message=self._progress_message(status, target_c, stable_for_s, dwell_s),
+                        wait_elapsed_s=wait_elapsed_s,
+                        message=self._progress_message(
+                            status,
+                            target_c,
+                            wait_elapsed_s,
+                            wait_s,
+                            timer_starts_immediately,
+                        ),
                     )
                 )
 
-            if stable_since is not None and stable_for_s >= dwell_s:
+            if wait_started_at is not None and wait_elapsed_s >= wait_s:
                 return status
-
-            if last_status is None:
-                raise RuntimeError("Temperature controller did not report status.")
 
     def _write(self, command: str):
         if self.serial is None:
@@ -204,13 +211,15 @@ class TemperatureController:
         self,
         status: TemperatureStatus,
         target_c: float,
-        stable_for_s: float,
-        dwell_s: float,
+        wait_elapsed_s: float,
+        wait_s: float,
+        timer_starts_immediately: bool,
     ) -> str:
         mode = f"{status.mode} " if status.mode else ""
+        timer_label = "elapsed" if timer_starts_immediately else "stable"
         return (
             f"{mode}{status.temperature_c:.2f}/{target_c:.2f} C "
-            f"(stable {stable_for_s:.0f}/{dwell_s:.0f} s)"
+            f"({timer_label} {wait_elapsed_s:.0f}/{wait_s:.0f} s)"
         )
 
     def _open_log(self):

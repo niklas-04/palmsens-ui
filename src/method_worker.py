@@ -125,13 +125,13 @@ class measurement_worker(QObject):
         if target_c is None:
             raise RuntimeError("Temperature step is missing a target temperature.")
 
-        dwell_s = action.wait_after_s or 0.0
+        wait_s = action.wait_after_s or 0.0
         self.progress.emit(
             TemperatureProgress(
                 target_c=target_c,
                 temperature_c=None,
                 setpoint_c=None,
-                stable_for_s=0.0,
+                wait_elapsed_s=0.0,
                 message=f"Setting chamber to {target_c:.2f} C",
             )
         )
@@ -142,19 +142,25 @@ class measurement_worker(QObject):
         temperature_controller.set_target(target_c)
 
         status = await asyncio.to_thread(
-            temperature_controller.wait_until_stable,
+            temperature_controller.wait_for_temperature_step,
             target_c,
-            dwell_s,
+            wait_s,
             self._abort_requested,
             self.progress.emit,
+            timer_starts_immediately=action.wait_starts_immediately,
+        )
+        completion = (
+            "Temperature timer completed"
+            if action.wait_starts_immediately
+            else "Temperature stabilized"
         )
         self.progress.emit(
             TemperatureProgress(
                 target_c=target_c,
                 temperature_c=status.temperature_c,
                 setpoint_c=status.setpoint_c,
-                stable_for_s=dwell_s,
-                message=f"Temperature stabilized at {status.temperature_c:.2f} C",
+                wait_elapsed_s=wait_s,
+                message=f"{completion} at {status.temperature_c:.2f} C",
             )
         )
 

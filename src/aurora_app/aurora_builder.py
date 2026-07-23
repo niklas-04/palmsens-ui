@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import aurora_unicycler
-from aurora_unicycler._core import Temperature
+from aurora_unicycler._core import Temperature, _coerce_c_rate
 from PySide6.QtCore import QMimeData, QRect, Qt, Signal
 from PySide6.QtGui import QDrag, QKeySequence, QShortcut, QWheelEvent
 from PySide6.QtWidgets import (
@@ -79,9 +79,16 @@ def parse_required_text(raw_value: Any) -> str:
     return value
 
 
-def parse_optional_c_rate(raw_value: Any) -> str | None:
+def parse_optional_c_rate(raw_value: Any) -> float | None:
     value = _as_text(raw_value)
-    return value or None
+    return _coerce_c_rate(value) if value else None
+
+
+def parse_current_direction(raw_value: Any) -> str:
+    value = _as_text(raw_value)
+    if value not in {"charging", "discharging"}:
+        raise ValueError("Current direction must be charging or discharging.")
+    return value
 
 
 def parse_bool(raw_value: Any) -> bool:
@@ -110,13 +117,19 @@ class BuilderUnitOption:
 
 
 @dataclass(frozen=True)
+class BuilderSelectOption:
+    value: Any
+    label: str
+
+
+@dataclass(frozen=True)
 class BuilderFieldSpec:
     key: str
     label: str
     default: Any
     parser: Parser
-    widget_kind: str = "line"
     unit_options: tuple[BuilderUnitOption, ...] = ()
+    select_options: tuple[BuilderSelectOption, ...] = ()
 
     @property
     def unit_key(self) -> str:
@@ -216,11 +229,12 @@ def _create_field_editor(
     on_changed: Callable[..., None],
 ) -> tuple[FieldValueWidget, QWidget, QComboBox | None]:
     raw_value = raw_values.get(field.key, field.default)
-    if field.widget_kind == "bool":
+    if field.select_options:
         value_widget = NoScrollComboBox(parent)
-        value_widget.addItem("No", False)
-        value_widget.addItem("Yes", True)
-        value_widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
+        for option in field.select_options:
+            value_widget.addItem(option.label, option.value)
+        selected_value = field.parser(raw_value)
+        value_widget.setCurrentIndex(max(value_widget.findData(selected_value), 0))
         value_widget.currentIndexChanged.connect(on_changed)
     else:
         value_widget = QLineEdit(_as_text(raw_value), parent)
@@ -245,14 +259,15 @@ def _create_field_editor(
 
 
 def _read_field_widget(field: BuilderFieldSpec, widget: FieldValueWidget) -> Any:
-    if field.widget_kind == "bool":
+    if field.select_options:
         return widget.currentData()
     return widget.text().strip()
 
 
 def _set_field_widget(field: BuilderFieldSpec, widget: FieldValueWidget, raw_value: Any) -> None:
-    if field.widget_kind == "bool":
-        widget.setCurrentIndex(1 if parse_bool(raw_value) else 0)
+    if field.select_options:
+        selected_value = field.parser(raw_value)
+        widget.setCurrentIndex(max(widget.findData(selected_value), 0))
     else:
         widget.setText(_as_text(raw_value))
 
@@ -349,11 +364,38 @@ def _current_step_target_summary(params: dict[str, Any]) -> str:
     return ""
 
 
+def _constant_current_summary(params: dict[str, Any]) -> str:
+    target = _current_step_target_summary(params)
+    if not target:
+        return ""
+    direction = params.get("current_direction", "charging").capitalize()
+    return _summary_from_parts(direction, target)
+
+
 def _display_value(params: dict[str, Any], key: str, default_unit: str) -> str:
     value = params.get(key, "")
     if value in {None, ""}:
         return ""
     return f"{value} {params.get(f'{key}_unit') or default_unit}"
+
+
+def _temperature_wait_summary(params: dict[str, Any]) -> str:
+    duration = _display_value(params, "wait_after_s", "s")
+    if not duration:
+        return ""
+    if params.get("wait_start") == "step_start":
+        return f"wait {duration} from step start"
+    return f"wait {duration}"
+
+
+def _build_constant_current(params: dict[str, Any]) -> aurora_unicycler.ConstantCurrent:
+    values = dict(params)
+    direction = values.pop("current_direction")
+    sign = -1 if direction == "discharging" else 1
+    for key in ("rate_C", "current_mA"):
+        if key in values:
+            values[key] = sign * abs(values[key])
+    return aurora_unicycler.ConstantCurrent(**values)
 
 
 STEP_SPECS: dict[str, BuilderStepSpec] = {
@@ -394,7 +436,17 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
                 TEMPERATURE_UNITS,
             ),
             _unit_field(
-                "wait_after_s", "Wait after target", "60", parse_required_float, TIME_UNITS
+                "wait_after_s", "Wait time", "60", parse_required_float, TIME_UNITS
+            ),
+            BuilderFieldSpec(
+                "wait_start",
+                "Wait timer starts",
+                "step_start",
+                parse_required_text,
+                select_options=(
+                    BuilderSelectOption("target_reached", "When target is reached"),
+                    BuilderSelectOption("step_start", "Immediately"),
+                ),
             ),
             _unit_field(
                 "ramp_rate",
@@ -407,16 +459,24 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
         builder=lambda params: Temperature(**params),
         summary_builder=lambda params: _summary_from_parts(
             _display_value(params, "until_temp_c", "degC"),
-            _display_value(params, "ramp_rate", "degC/min") or "global ramp rate",
-            f"wait {_display_value(params, 'wait_after_s', 's')}"
-            if params.get("wait_after_s")
-            else ""
+            _display_value(params, "ramp_rate", "degC/min"),
+            _temperature_wait_summary(params),
         ),
     ),
     "constant_current": BuilderStepSpec(
         key="constant_current",
         label="Constant Current",
         fields=(
+            BuilderFieldSpec(
+                "current_direction",
+                "Direction",
+                "charging",
+                parse_current_direction,
+                select_options=(
+                    BuilderSelectOption("charging", "Charging"),
+                    BuilderSelectOption("discharging", "Discharging"),
+                ),
+            ),
             BuilderFieldSpec("rate_C", "C-rate", "0.5", parse_optional_c_rate),
             _unit_field("current_mA", "Current", "", parse_optional_float, CURRENT_UNITS),
             _unit_field("until_time_s", "Max time", "10800", parse_optional_float, TIME_UNITS),
@@ -428,9 +488,9 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
                 VOLTAGE_UNITS,
             ),
         ),
-        builder=lambda params: aurora_unicycler.ConstantCurrent(**params),
+        builder=_build_constant_current,
         summary_builder=lambda params: _summary_from_parts(
-            _current_step_target_summary(params),
+            _constant_current_summary(params),
             f"until {_display_value(params, 'until_voltage_V', 'V')}"
             if params.get("until_voltage_V")
             else "",
@@ -529,7 +589,10 @@ STEP_SPECS: dict[str, BuilderStepSpec] = {
                 "Drift correction",
                 False,
                 parse_bool,
-                widget_kind="bool",
+                select_options=(
+                    BuilderSelectOption(False, "No"),
+                    BuilderSelectOption(True, "Yes"),
+                ),
             ),
         ),
         builder=lambda params: aurora_unicycler.ImpedanceSpectroscopy(**params),
@@ -595,6 +658,16 @@ def visual_steps_from_protocol_data(protocol_data: dict[str, Any]) -> list[dict[
                 step["loop_to_step"] = ""
             else:
                 raise ValueError("An imported Loop step has an invalid target.")
+        elif step_type == "constant_current":
+            signed_value = step.get("rate_C")
+            if signed_value is None:
+                signed_value = step.get("current_mA")
+            step["current_direction"] = (
+                "discharging" if signed_value is not None and signed_value < 0 else "charging"
+            )
+            for key in ("rate_C", "current_mA"):
+                if step.get(key) is not None:
+                    step[key] = abs(step[key])
         elif step_type == "impedance_spectroscopy":
             amplitude_v = step.pop("amplitude_V", None)
             amplitude_ma = step.pop("amplitude_mA", None)
@@ -770,7 +843,11 @@ class AuroraStepCard(QFrame):
             raw_values = (
                 {"cycle_count": ""}
                 if self.step_type == "loop"
-                else {field.key: "" for field in STEP_SPECS[self.step_type].fields}
+                else {
+                    field.key: ""
+                    for field in STEP_SPECS[self.step_type].fields
+                    if not field.select_options
+                }
             )
 
         if self.step_type == "loop":
@@ -1010,7 +1087,7 @@ class AuroraStepCard(QFrame):
             )
 
         summary = STEP_SPECS[self.step_type].summary_builder(values).strip()
-        return summary or "Configure this Aurora step."
+        return summary or "Configure this step."
 
 
 class AuroraStepsContainer(QWidget):
@@ -1176,6 +1253,9 @@ class AuroraVisualBuilder(QWidget):
             self.steps_container,
         )
 
+        self.step_move_frame = self._build_step_move_section()
+        sequence_layout.addWidget(self.step_move_frame)
+
         self.splitter.addWidget(self.sequence_frame)
 
         self.options_column = QWidget(self)
@@ -1204,8 +1284,6 @@ class AuroraVisualBuilder(QWidget):
         options_layout.addWidget(self.global_frame)
         options_layout.addWidget(self.record_frame)
         options_layout.addWidget(self.safety_frame)
-        self.step_move_frame = self._build_step_move_section()
-        options_layout.addWidget(self.step_move_frame)
         options_layout.addStretch(1)
         self.splitter.addWidget(self.options_column)
         self.splitter.setStretchFactor(0, 3)
@@ -1305,7 +1383,7 @@ class AuroraVisualBuilder(QWidget):
         return frame
 
     def _build_step_move_section(self) -> QFrame:
-        frame = QFrame(self.options_column)
+        frame = QFrame(self.sequence_frame)
         frame.setObjectName("auroraSection")
         frame.setFrameShape(QFrame.Shape.StyledPanel)
 
@@ -1342,6 +1420,18 @@ class AuroraVisualBuilder(QWidget):
         self.copy_step_button.setFixedHeight(30)
         self.copy_step_button.clicked.connect(self.copy_steps_after_selection)
         buttons.addWidget(self.copy_step_button)
+
+        self.delete_steps_button = QPushButton("Delete selected", frame)
+        self.delete_steps_button.setObjectName("auroraStepAction")
+        self.delete_steps_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self.delete_steps_button.setToolTip("Delete all selected steps")
+        self.delete_steps_button.setAccessibleName("Delete all selected steps")
+        self.delete_steps_button.setFixedHeight(30)
+        self.delete_steps_button.setEnabled(False)
+        self.delete_steps_button.clicked.connect(self.remove_selected_steps)
+        buttons.addWidget(self.delete_steps_button)
 
         self.move_up_button = QPushButton(frame)
         self.move_up_button.setObjectName("auroraStepAction")
@@ -1507,19 +1597,33 @@ class AuroraVisualBuilder(QWidget):
         return len(self.step_cards)
 
     def remove_step(self, card: AuroraStepCard):
-        if card not in self.step_cards:
+        self._remove_steps({card})
+
+    def remove_selected_steps(self):
+        self._remove_steps(self.selected_cards)
+
+    def _remove_steps(self, cards: set[AuroraStepCard]):
+        cards = {card for card in cards if card in self.step_cards}
+        if not cards:
             return
-        was_active = card.is_expanded
-        old_index = self.step_cards.index(card)
-        self.selected_cards.discard(card)
-        if self._selection_anchor is card:
+
+        active_card = self._selected_card()
+        first_removed_index = min(self.step_cards.index(card) for card in cards)
+        if self._selection_anchor in cards:
             self._selection_anchor = None
-        self.step_cards.remove(card)
-        self.steps_layout.removeWidget(card)
-        card.deleteLater()
-        if was_active and self.step_cards:
-            next_index = min(old_index, len(self.step_cards) - 1)
-            self._set_active_card(self.step_cards[next_index])
+
+        for card in cards:
+            self.steps_layout.removeWidget(card)
+            card.deleteLater()
+        self.step_cards = [card for card in self.step_cards if card not in cards]
+        self._set_selected_cards(self.selected_cards - cards)
+
+        if active_card in cards:
+            next_card = None
+            if self.step_cards:
+                next_index = min(first_removed_index, len(self.step_cards) - 1)
+                next_card = self.step_cards[next_index]
+            self._set_active_card(next_card)
         self._refresh_cards()
 
     def move_step(self, card: AuroraStepCard, offset: int):
@@ -1599,6 +1703,7 @@ class AuroraVisualBuilder(QWidget):
             card.set_selected(card in self.selected_cards)
         self._update_sequence_meta()
         self.copy_step_button.setEnabled(bool(self.selected_cards))
+        self.delete_steps_button.setEnabled(bool(self.selected_cards))
 
     def _begin_marquee_selection(self, position, modifiers):
         self.steps_container.setFocus()

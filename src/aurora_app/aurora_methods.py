@@ -109,6 +109,7 @@ class AuroraStepAction:
     target_temperature_c: float | None = None
     ramp_rate_c_per_min: float | None = None
     wait_after_s: float | None = None
+    wait_starts_immediately: bool = True
 
     @property
     def is_palmsens(self) -> bool:
@@ -260,6 +261,7 @@ def render_aurora_step_actions(
                     target_temperature_c=step.until_temp_c,
                     ramp_rate_c_per_min=step.ramp_rate,
                     wait_after_s=step.wait_after_s,
+                    wait_starts_immediately=step.wait_start == "step_start",
                 )
             )
             continue
