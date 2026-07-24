@@ -1307,6 +1307,12 @@ class AuroraVisualBuilder(QWidget):
         )
         self.paste_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         self.paste_shortcut.activated.connect(self.paste_copied_steps)
+        self.delete_shortcut = QShortcut(
+            QKeySequence.StandardKey.Delete,
+            self.steps_container,
+        )
+        self.delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.delete_shortcut.activated.connect(self.remove_selected_steps)
 
         self.load_protocol_data(default_visual_builder_data())
 
@@ -1432,7 +1438,7 @@ class AuroraVisualBuilder(QWidget):
         self.delete_steps_button.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
         )
-        self.delete_steps_button.setToolTip("Delete all selected steps")
+        self.delete_steps_button.setToolTip("Delete all selected steps (Del)")
         self.delete_steps_button.setAccessibleName("Delete all selected steps")
         self.delete_steps_button.setFixedHeight(30)
         self.delete_steps_button.setEnabled(False)
