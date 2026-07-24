@@ -346,7 +346,7 @@ GLOBAL_FIELDS: tuple[BuilderFieldSpec, ...] = (
         "temperature_ramp_rate",
         "Temperature ramp rate",
         "0.35",
-        parse_required_float,
+        parse_optional_float,
         TEMPERATURE_RATE_UNITS,
     ),
 )
@@ -746,8 +746,14 @@ def build_protocol_from_visual_data(
         if spec.field_choice is not None:
             raw_step = spec.field_choice.selected_values(raw_step)
         params = _clean_none_values(_parse_fields(spec.fields, raw_step))
-        if step_type == "temperature":
-            params.setdefault("ramp_rate", global_values["temperature_ramp_rate"])
+        if step_type == "temperature" and "ramp_rate" not in params:
+            global_ramp_rate = global_values["temperature_ramp_rate"]
+            if global_ramp_rate is None:
+                raise ValueError(
+                    "Temperature ramp rate is required for "
+                    f"temperature step {index} when no step override is set."
+                )
+            params["ramp_rate"] = global_ramp_rate
         method_steps.append(spec.builder(params))
 
     if not method_steps:

@@ -10,6 +10,7 @@ if __package__ in {None, ""}:
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QLabel,
@@ -28,10 +29,15 @@ from src.aurora_app.aurora_builder import (
     NoScrollComboBox,
     visual_steps_from_protocol_data,
 )
+from src.aurora_app.aurora_methodscript_export_dialog import (
+    AuroraMethodScriptExportDialog,
+)
 from src.aurora_app.aurora_methods import (
     AuroraMethodPackage,
     build_aurora_package,
     load_aurora_package,
+    render_aurora_package,
+    validate_aurora_methodscript_export,
 )
 
 
@@ -213,6 +219,59 @@ class AuroraMethodEditor(QWidget):
         self.loaded_package_path = path
         QMessageBox.information(self, "Package saved", f"Saved Aurora package to:\n{path}")
 
+    def export_methodscript_file(self):
+        try:
+            package = self.build_package()
+            validate_aurora_methodscript_export(package)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+
+        settings_dialog = AuroraMethodScriptExportDialog(self)
+        if settings_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if settings_dialog.export_settings is None:
+            return
+
+        try:
+            methodscript = render_aurora_package(
+                package,
+                settings_dialog.export_settings,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+
+        default_name = self.method_name_edit.text().strip() or "aurora_method"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export MethodSCRIPT",
+            f"{default_name}.mscr",
+            "MethodSCRIPT Files (*.mscr);;Text Files (*.txt);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        path = Path(file_path)
+        if path.suffix == "":
+            path = path.with_suffix(".mscr")
+
+        try:
+            path.write_text(methodscript, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Export failed",
+                f"Could not save MethodSCRIPT:\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "MethodSCRIPT exported",
+            f"Saved MethodSCRIPT to:\n{path}",
+        )
+
     @staticmethod
     def default_aurora_json() -> str:
         return json.dumps(
@@ -268,6 +327,10 @@ class AuroraMethodBuilderWindow(QMainWindow):
         save_action = QAction("Save Package", self)
         save_action.triggered.connect(self.editor.save_package_file)
         toolbar.addAction(save_action)
+
+        export_action = QAction("Export to MethodSCRIPT", self)
+        export_action.triggered.connect(self.editor.export_methodscript_file)
+        toolbar.addAction(export_action)
 
 
 def main():

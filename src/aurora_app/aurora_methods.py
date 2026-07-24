@@ -225,8 +225,28 @@ def render_aurora_package(
     package: AuroraMethodPackage,
     settings: AuroraExportSettings,
 ) -> str:
+    validate_aurora_methodscript_export(package)
     protocol = aurora_unicycler.CyclingProtocol.from_dict(package.protocol_json)
     return build_aurora_methodscript(protocol, settings)
+
+
+def validate_aurora_methodscript_export(package: AuroraMethodPackage) -> None:
+    """Reject package steps that require app-side orchestration."""
+    protocol = aurora_unicycler.CyclingProtocol.from_dict(package.protocol_json)
+    temperature_steps = [
+        str(index)
+        for index, step in enumerate(protocol.method, start=1)
+        if isinstance(step, Temperature)
+    ]
+    if not temperature_steps:
+        return
+
+    step_list = ", ".join(temperature_steps)
+    raise ValueError(
+        "Temperature steps cannot be exported to MethodSCRIPT because they are "
+        "executed by the app's external chamber controller. "
+        f"Remove temperature step(s) {step_list} or run the package through the app."
+    )
 
 
 def build_aurora_stepwise_method(
