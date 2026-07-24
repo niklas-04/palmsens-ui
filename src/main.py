@@ -66,6 +66,8 @@ class BdfAutoSaveSettings:
     cell_name: str
     cas_id: str
     optional_quantity_keys: set[str]
+    use_step_based_filenames: bool = False
+    filename_prefix: str = ""
 
 
 class connection_indicator(QLabel):
@@ -520,6 +522,17 @@ class method_configuration_dialog(QDialog):
         self.aurora_auto_bdf_cas_id_edit.setPlaceholderText("e.g. nisu1374")
         aurora_auto_bdf_layout.addWidget(QLabel("CAS ID", self.aurora_auto_bdf_widget), 3, 0)
         aurora_auto_bdf_layout.addWidget(self.aurora_auto_bdf_cas_id_edit, 3, 1, 1, 2)
+
+        self.aurora_auto_bdf_step_naming_checkbox = QCheckBox(
+            "Use step type in file names",
+            self.aurora_auto_bdf_widget,
+        )
+        aurora_auto_bdf_layout.addWidget(self.aurora_auto_bdf_step_naming_checkbox, 4, 0, 1, 3)
+
+        self.aurora_auto_bdf_filename_prefix_edit = QLineEdit("", self.aurora_auto_bdf_widget)
+        self.aurora_auto_bdf_filename_prefix_edit.setPlaceholderText("e.g. experiment_1")
+        aurora_auto_bdf_layout.addWidget(QLabel("Base name", self.aurora_auto_bdf_widget), 5, 0)
+        aurora_auto_bdf_layout.addWidget(self.aurora_auto_bdf_filename_prefix_edit, 5, 1, 1, 2)
         aurora_auto_bdf_layout.setColumnStretch(1, 1)
         package_layout.addWidget(self.aurora_auto_bdf_widget)
 
@@ -604,6 +617,7 @@ class method_configuration_dialog(QDialog):
         self.aurora_device_combo.currentIndexChanged.connect(self.update_additional_measurements)
         self.temperature_enabled_checkbox.toggled.connect(self.update_temperature_fields)
         self.aurora_auto_bdf_checkbox.toggled.connect(self.update_auto_bdf_fields)
+        self.aurora_auto_bdf_step_naming_checkbox.toggled.connect(self.update_auto_bdf_fields)
         self.update_additional_measurements()
         self.update_temperature_fields()
         self.update_auto_bdf_fields()
@@ -664,6 +678,10 @@ class method_configuration_dialog(QDialog):
     def update_auto_bdf_fields(self):
         enabled = self.aurora_auto_bdf_checkbox.isChecked()
         self.aurora_auto_bdf_widget.setVisible(enabled)
+        use_step_names = self.aurora_auto_bdf_step_naming_checkbox.isChecked()
+        self.aurora_auto_bdf_filename_prefix_edit.setEnabled(use_step_names)
+        self.aurora_auto_bdf_cell_name_edit.setEnabled(not use_step_names)
+        self.aurora_auto_bdf_cas_id_edit.setEnabled(not use_step_names)
 
     def build_bdf_auto_save_settings(self) -> BdfAutoSaveSettings | None:
         if not self.aurora_auto_bdf_checkbox.isChecked():
@@ -673,13 +691,24 @@ class method_configuration_dialog(QDialog):
         if not raw_output_dir:
             raise ValueError("BDF auto-save folder is required.")
 
+        use_step_names = self.aurora_auto_bdf_step_naming_checkbox.isChecked()
+        filename_prefix = self.aurora_auto_bdf_filename_prefix_edit.text().strip()
+        if use_step_names and not self._is_valid_filename_prefix(filename_prefix):
+            raise ValueError("A base name containing at least one letter or number is required.")
+
         return BdfAutoSaveSettings(
             output_dir=Path(raw_output_dir),
             export_type=self.aurora_auto_bdf_type_combo.currentData(),
             cell_name=self.aurora_auto_bdf_cell_name_edit.text().strip() or "A0001",
             cas_id=self.aurora_auto_bdf_cas_id_edit.text().strip(),
             optional_quantity_keys={quantity_key for quantity_key, _ in bdf_optional_quantity_choices()},
+            use_step_based_filenames=use_step_names,
+            filename_prefix=filename_prefix,
         )
+
+    @staticmethod
+    def _is_valid_filename_prefix(value: str) -> bool:
+        return any(character.isalnum() for character in value)
 
     def build_temperature_settings(self) -> TemperatureSettings | None:
         if not self.temperature_enabled_checkbox.isChecked():
@@ -1433,16 +1462,24 @@ class main_window(QMainWindow):
             return
 
         try:
-            used_sequence_numbers = self.worker_bdf_auto_save_sequences.setdefault(worker, set())
-            sequence_number = self._next_bdf_sequence_number(
-                settings.output_dir,
-                settings.cell_name,
-                settings.cas_id,
-                settings.export_type,
-                used_sequence_numbers,
-            )
-            used_sequence_numbers.add(sequence_number)
-            filename_stem = self._bdf_export_stem(settings.cell_name, settings.cas_id, sequence_number)
+            if settings.use_step_based_filenames:
+                filename_stem = self._step_bdf_export_stem(
+                    settings.filename_prefix,
+                    segment.step_type,
+                    segment.index,
+                )
+            else:
+                used_sequence_numbers = self.worker_bdf_auto_save_sequences.setdefault(worker, set())
+                sequence_number = self._next_bdf_sequence_number(
+                    settings.output_dir,
+                    settings.cell_name,
+                    settings.cas_id,
+                    settings.export_type,
+                    used_sequence_numbers,
+                )
+                used_sequence_numbers.add(sequence_number)
+                filename_stem = self._bdf_export_stem(settings.cell_name, settings.cas_id, sequence_number)
+
             step_run = LogicalMeasurementRun(f"{panel.base_title} step {segment.index}", [segment])
             written_files = export_measurement_to_bdf_files(
                 step_run,
@@ -1571,6 +1608,17 @@ class main_window(QMainWindow):
         if sanitized_cas_id:
             return f"UU_{sanitized_cell_name}_{sanitized_cas_id}_{export_date}_{sequence_number:04d}"
         return f"UU_{sanitized_cell_name}_{export_date}_{sequence_number:04d}"
+
+    @classmethod
+    def _step_bdf_export_stem(
+        cls,
+        filename_prefix: str,
+        step_type: str | None,
+        measurement_number: int,
+    ) -> str:
+        sanitized_prefix = cls._sanitize_export_name(filename_prefix) or "measurement"
+        sanitized_step_type = cls._sanitize_export_name(step_type or "step") or "step"
+        return f"{sanitized_prefix}_{measurement_number}_{sanitized_step_type}"
 
     @classmethod
     def _next_bdf_sequence_number(
